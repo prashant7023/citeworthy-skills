@@ -1,0 +1,85 @@
+{
+  "name": "citeworthy",
+  "version": "1.0.0",
+  "description": "An agent skill marketplace that audits any website for the problems that stop AI assistants finding, reading, quoting and correctly describing a brand, and that stop visitors engaging once they arrive. Emits a single evidence-backed report of findings, severities and prioritized fixes.",
+  "license": "MIT",
+  "entrypoint": "cw-audit-conductor",
+  "skills": [
+    {
+      "id": "cw-audit-conductor",
+      "path": "skills/cw-audit-conductor",
+      "entrypoint": true,
+      "pillar": "composition",
+      "summary": "Receives the audit request, runs every other skill in causal order, applies the cross-skill gating/confounding/linking/prioritisation rules, and emits the single validated audit report."
+    },
+    {
+      "id": "cw-reach-gate",
+      "path": "skills/cw-reach-gate",
+      "pillar": "access",
+      "summary": "Can a crawler reach the site at all? Distinguishes answer-time retrieval agents from training-corpus crawlers, checks robots/sitemaps/status/canonicals/snippet directives, and produces the shared evidence bundle every other skill reads."
+    },
+    {
+      "id": "cw-render-gap",
+      "path": "skills/cw-render-gap",
+      "pillar": "parse",
+      "summary": "Can a machine read what a human sees? Measures the raw-HTML vs rendered-DOM gap and finds facts locked in JavaScript, images, PDFs, video and iframes."
+    },
+    {
+      "id": "cw-schema-truth",
+      "path": "skills/cw-schema-truth",
+      "pillar": "extract",
+      "summary": "Are the facts machine-readable? Checks schema.org presence, validity, and agreement with the visible page."
+    },
+    {
+      "id": "cw-quotability",
+      "path": "skills/cw-quotability",
+      "pillar": "extract",
+      "summary": "Are the facts quotable? Checks whether the prose contains self-contained, declarative, bounded, specific sentences a retriever can lift as an answer."
+    },
+    {
+      "id": "cw-entity-consensus",
+      "path": "skills/cw-entity-consensus",
+      "pillar": "trust",
+      "summary": "Does the wider web agree? Audits on-site identity anchors, then probes search to test entity ambiguity, misrepresentation and independent corroboration."
+    },
+    {
+      "id": "cw-time-decay",
+      "path": "skills/cw-time-decay",
+      "pillar": "trust",
+      "summary": "Are the facts still true, and can a machine tell? Separates undatable content from stale content from dishonest freshness signals."
+    },
+    {
+      "id": "cw-arrival-experience",
+      "path": "skills/cw-arrival-experience",
+      "pillar": "engage",
+      "summary": "Does the arriving visitor stay? Framed around AI-referral traffic: cold arrivals on inner pages with a specific intent and no session history."
+    }
+  ],
+  "pipeline": [
+    "cw-reach-gate",
+    "cw-render-gap",
+    "cw-schema-truth",
+    "cw-quotability",
+    "cw-time-decay",
+    "cw-entity-consensus",
+    "cw-arrival-experience",
+    "cw-audit-conductor"
+  ],
+  "requirements": {
+    "python": ">=3.9",
+    "dependencies": [],
+    "optional_dependencies": [
+      {
+        "name": "playwright",
+        "purpose": "Renders pages so the raw-HTML vs rendered-DOM gap can be measured rather than inferred. Without it, render findings are reported as explicitly-labelled heuristics at reduced confidence."
+      }
+    ]
+  },
+  "safety": {
+    "recommend_only": true,
+    "read_only": true,
+    "respects_robots_txt": true,
+    "authenticated_areas": "never fetched (filtered by URL path and subdomain)",
+    "network_requests": "GET only, rate-limited, concurrency-capped, bounded by pages/depth/time"
+  }
+}

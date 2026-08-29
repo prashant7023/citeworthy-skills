@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/citeworthy/report.schema.json",
+  "title": "Brand Citeworthy Audit Report",
+  "description": "Output contract for the marketplace entrypoint. Fields marked required are the contest-mandated floor; everything else is an documented extension. verify_report.py enforces this contract plus an additional evidence-quality gate.",
+  "type": "object",
+  "required": ["site", "audited_at", "summary", "findings"],
+  "properties": {
+    "site": {
+      "type": "string",
+      "description": "Canonical host actually audited, resolved after redirects.",
+      "examples": ["example.com", "www.example.com"]
+    },
+    "audited_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$",
+      "description": "ISO-8601 UTC timestamp ending in Z."
+    },
+    "summary": {
+      "type": "object",
+      "required": ["total_findings", "critical", "high", "medium"],
+      "properties": {
+        "total_findings": {"type": "integer", "minimum": 0},
+        "critical": {"type": "integer", "minimum": 0},
+        "high": {"type": "integer", "minimum": 0},
+        "medium": {"type": "integer", "minimum": 0},
+        "low": {"type": "integer", "minimum": 0},
+        "citeworthy_score": {
+          "type": "integer", "minimum": 0, "maximum": 100,
+          "description": "EXTENSION. Mean of the five pillar scores. Comparable across runs of the same site, not across different sites."
+        },
+        "pillar_scores": {
+          "type": "object",
+          "description": "EXTENSION. 0-100 per pillar.",
+          "properties": {
+            "access": {"type": "integer"}, "parse": {"type": "integer"},
+            "extract": {"type": "integer"}, "trust": {"type": "integer"},
+            "engage": {"type": "integer"}
+          }
+        },
+        "headline": {"type": "string", "description": "EXTENSION. One-sentence verdict."}
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "severity", "evidence", "suggested_action"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^F-\\d{3,}$",
+                 "description": "Assigned by the entrypoint in ranked order."},
+          "title": {"type": "string", "minLength": 10},
+          "severity": {"enum": ["critical", "high", "medium", "low"]},
+          "evidence": {
+            "type": "string", "minLength": 60,
+            "description": "Concrete, checkable observation. Must cite a measured quantity (counts, ratios, status codes) and, where applicable, verbatim excerpts and URLs. Enforced by verify_report.py."
+          },
+          "suggested_action": {
+            "type": "object",
+            "required": ["summary", "priority"],
+            "properties": {
+              "summary": {"type": "string", "minLength": 15,
+                          "description": "What to change, in one sentence."},
+              "priority": {"enum": ["critical", "high", "medium", "low"]},
+              "steps": {"type": "array", "items": {"type": "string"},
+                        "description": "EXTENSION. Ordered, concrete remediation steps."},
+              "effort": {"enum": ["low", "medium", "high"],
+                         "description": "EXTENSION. Tracked separately from severity so impact and cost can be traded off."},
+              "owner": {"type": "string",
+                        "description": "EXTENSION. Which function should act: web/dev, content, marketing, infrastructure, design, legal."}
+            }
+          },
+          "check_id": {"type": "string",
+                       "description": "EXTENSION. Stable id from references/finding-catalog.md. Makes every finding traceable to a named, documented check."},
+          "pillar": {"enum": ["access", "parse", "extract", "trust", "engage"],
+                     "description": "EXTENSION. Which stage of the visibility pipeline this belongs to."},
+          "confidence": {"enum": ["high", "medium", "low"],
+                         "description": "EXTENSION. How directly the evidence was measured. See severity-model.md."},
+          "source_skill": {"type": "string", "description": "EXTENSION. Which skill produced it."},
+          "affected_urls": {"type": "array", "items": {"type": "string"},
+                            "description": "EXTENSION. Up to 20 example URLs exhibiting the defect."},
+          "metrics": {"type": "object", "description": "EXTENSION. Raw measurements behind the evidence string."},
+          "blocked_by": {"type": "string",
+                         "description": "EXTENSION. Check id of an access gate that makes this fix ineffective until resolved. Composition rule 1."},
+          "confounded_by": {"type": "string",
+                            "description": "EXTENSION. Check id explaining why this may be an artefact of the audit's own limits. Composition rule 2. Always accompanied by confidence:low."},
+          "verification": {"type": "string",
+                           "description": "EXTENSION. Exact command or method to confirm a non-measured finding."},
+          "related_check_ids": {"type": "array", "items": {"type": "string"},
+                                "description": "EXTENSION. Other findings sharing this root cause. Composition rule 3."},
+          "proactive": {"type": "boolean",
+                        "description": "EXTENSION. True where no defect exists but an opportunity does."},
+          "informational": {"type": "boolean",
+                            "description": "EXTENSION. True for deliberate trade-offs reported for awareness, not as defects (e.g. REACH-002)."},
+          "evidence_source": {"type": "string",
+                              "description": "EXTENSION. For off-site findings, the probe id whose results support this."}
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "description": "EXTENSION. What was actually audited, so the reader can judge coverage.",
+      "properties": {
+        "start_url": {"type": "string"}, "pages_crawled": {"type": "integer"},
+        "pages_ok": {"type": "integer"}, "page_types": {"type": "object"},
+        "crawled_at": {"type": "string"}, "crawl_duration_seconds": {"type": "number"},
+        "user_agent": {"type": "string"}, "renderer": {"type": "object"},
+        "robots_respected": {"const": true}, "read_only": {"const": true}
+      }
+    },
+    "method": {
+      "type": "object",
+      "description": "EXTENSION. How the audit was performed, including which checks ran.",
+      "properties": {
+        "skills": {"type": "array", "items": {"type": "object"}},
+        "checks_run": {"type": "array", "items": {"type": "string"}},
+        "checks_run_count": {"type": "integer"},
+        "pillars": {"type": "object"},
+        "scoring": {"type": "string"}
+      }
+    },
+    "limitations": {
+      "type": "array", "items": {"type": "string"},
+      "description": "EXTENSION, and load-bearing. Everything the audit could NOT establish. A check that did not run appears here and is never reported as passing."
+    },
+    "root_causes": {
+      "type": "array",
+      "description": "EXTENSION. Findings grouped by shared underlying cause. Composition rule 3.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "root_cause": {"type": "string"},
+          "finding_check_ids": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "proactive_recommendations": {
+      "type": "array",
+      "description": "EXTENSION. Improvements worth making even where no defect was detected.",
+      "items": {
+        "type": "object",
+        "required": ["id", "title"],
+        "properties": {
+          "id": {"type": "string"}, "title": {"type": "string"},
+          "pillar": {"type": "string"}, "effort": {"type": "string"},
+          "owner": {"type": "string"}, "rationale": {"type": "string"},
+          "steps": {"type": "array", "items": {"type": "string"}},
+          "type": {"const": "proactive_improvement"}
+        }
+      }
+    },
+    "remediation_plan": {
+      "type": "array",
+      "description": "EXTENSION. Findings and recommendations sequenced into four phases; each item appears in exactly one.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "phase": {"type": "integer"}, "name": {"type": "string"},
+          "criteria": {"type": "string"},
+          "items": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "description": "EXTENSION. Observations from sub-skills, including checks that passed and what satisfied them.",
+      "items": {"type": "object"}
+    }
+  }
+}
