@@ -75,7 +75,7 @@ so the whole audit costs exactly **one** polite crawl.
    python skills/cw-reach-gate/scripts/harvest_site.py "<url>" \
      --workspace "<ws>" --max-pages 25 --max-depth 3 --budget-seconds 150 --render auto
    ```
-   This writes `manifest.json`, `pages/*.json`, `pages/*.raw.html` and the `ACC-*`
+   This writes `manifest.json`, `pages/*.json`, `pages/*.raw.html` and the `REACH-*`
    findings. **If this step fails, stop** — every later step depends on the bundle.
 
 3. **Parse** — `python skills/cw-render-gap/scripts/probe_render_gap.py --workspace "<ws>"`
@@ -83,6 +83,12 @@ so the whole audit costs exactly **one** polite crawl.
 4. **Extract** — run both, they cover different layers (markup vs. prose):
    - `python skills/cw-schema-truth/scripts/probe_schema_truth.py --workspace "<ws>"`
    - `python skills/cw-quotability/scripts/probe_quotability.py --workspace "<ws>"`
+
+   `cw-quotability` then asks you to make one judgment the scripts deliberately do not:
+   read the homepage's first screen and decide whether a stranger could say what the
+   brand is. Follow `skills/cw-quotability/references/judgment-rubric.md`. It is the only
+   non-deterministic step in the pipeline, it is quote-backed and `-J` suffixed, and the
+   audit is still valid if you skip it.
 
 5. **Trust** —
    - `python skills/cw-time-decay/scripts/probe_time_decay.py --workspace "<ws>"`

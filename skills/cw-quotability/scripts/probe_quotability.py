@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-probe_quotability.py -- ANS-* checks: can a machine QUOTE a specific fact?
+probe_quotability.py -- QUOTE-* checks: can a machine QUOTE a specific fact?
 
 Stage 3b, and the half of extractability that markup cannot fix. A page can be
 fully crawlable, fully server-rendered and carry perfect JSON-LD, and still never
@@ -88,7 +88,7 @@ def main():
     manifest, pages = load_bundle(args.workspace)
     docs = html_pages(pages)
     find = Findings("cw-quotability", "extract")
-    for cid in [f"QUOTE-{n:03d}" for n in range(1, 13)]:
+    for cid in [f"QUOTE-{n:03d}" for n in range(1, 14)]:
         find.check(cid)
 
     if not docs:
@@ -446,6 +446,66 @@ def main():
                   "Keep anchor text under ~8 words and make it unique per destination.",
                   "Never label two different destinations with the same anchor text on one page."],
                  effort="low", owner="content")
+
+    # -- QUOTE-013: no stated boundaries, so an assistant guesses ------------
+    # Asked "does X support Y?", a model answers from a page that only ever says
+    # what X *does*. With nothing stating what it does NOT do, the plausible-sounding
+    # guess is the answer -- and the brand gets blamed for the hallucination.
+    # Explicit boundaries and spec tables are the cheapest way to bound that.
+    #
+    # Guarded hard, because the naive form of this check fires on every page that
+    # lacks a <table>: it only runs on pages where the question actually arises
+    # (product, pricing, docs) AND that make positive capability claims worth bounding.
+    CAPABILITY_CLAIM = re.compile(
+        r"\b(?:supports?|integrat\w+|compatible with|works with|includes?|features?|"
+        r"connects? to|syncs? with|available (?:for|on)|built for)\b", re.I)
+    BOUNDARY = re.compile(
+        r"\b(?:does not|doesn't|not compatible|not supported|not available|"
+        r"unsupported|excludes?|excluding|limitations?|not included|"
+        r"what (?:it|this) is not|out of scope|we do not|cannot)\b", re.I)
+
+    bounded_types = {"product", "pricing", "docs"}
+    candidates, unbounded = [], []
+    for page in docs:
+        if page.get("page_type") not in bounded_types:
+            continue
+        view, _ = best_view(page)
+        text = body_text(view)
+        if len(text.split()) < 200:
+            continue
+        claims = len(CAPABILITY_CLAIM.findall(text))
+        if claims < 3:
+            continue                       # not a page that makes capability promises
+        candidates.append(page["url"])
+        has_table = view.get("counts", {}).get("table", 0) > 0
+        has_boundary = bool(BOUNDARY.search(text))
+        if not has_table and not has_boundary:
+            unbounded.append({"url": page["url"], "claims": claims})
+
+    if candidates and len(unbounded) >= max(2, len(candidates) * 0.5):
+        worst = max(unbounded, key=lambda u: u["claims"])
+        find.add("QUOTE-013",
+                 "Pages state what the product does but never what it does not",
+                 escalate("medium", len(unbounded) / max(1, len(candidates))),
+                 f"{len(unbounded)}/{len(candidates)} product, pricing or documentation pages make "
+                 f"capability claims (\"supports\", \"integrates with\", \"works with\") without any "
+                 f"specification table or explicit boundary statement. Worst: {worst['url']} with "
+                 f"{worst['claims']} capability claims and no stated limits. When a user asks an "
+                 "assistant whether this product does something it does not do, there is nothing on "
+                 "the page to contradict a plausible guess -- so the assistant invents a capability "
+                 "and the brand inherits the support ticket.",
+                 "State the boundaries explicitly, and put the specifics in a real table.",
+                 ["Add a specification table with the concrete values (limits, tiers, supported "
+                  "versions, regions) -- a table is unambiguous in a way prose is not.",
+                  "Add a short, plainly-worded limits section: what it does not do, what it is not "
+                  "compatible with, who it is not for.",
+                  "Name the nearest alternative for the cases you exclude; it builds trust and it "
+                  "keeps the assistant from guessing you cover them.",
+                  "Mirror the same values into structured data so the boundary is machine-readable."],
+                 effort="medium", owner="content",
+                 affected_urls=[u["url"] for u in unbounded[:20]],
+                 metrics={"pages_with_claims": len(candidates),
+                          "pages_without_boundaries": len(unbounded)})
 
     find.write(args.workspace, total)
     print(f"cw-quotability: {len(find.items)} finding(s) across {total} page(s)")

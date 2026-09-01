@@ -1,4 +1,4 @@
-# Render checks (RND-*)
+# Render checks (READ-*)
 
 | Check | Fires when | Severity | Guard against false positives |
 |---|---|---|---|

@@ -1,4 +1,4 @@
-# Access checks (ACC-*)
+# Access checks (REACH-*)
 
 Thresholds and guard conditions for every check in `cw-reach-gate`. See
 `ai-crawler-reference.md` for the agent classification these depend on.

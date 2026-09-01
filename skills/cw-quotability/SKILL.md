@@ -71,7 +71,23 @@ the fixes (rewrite the copy vs. add markup).
    Every chunk is then mostly menu labels identical across the whole site.
 9. **Consistency and clarity** (`QUOTE-009` inconsistent naming, `QUOTE-010` unexpanded
    acronyms, `QUOTE-011` numeric claims with no baseline, `QUOTE-012` generic anchor text).
-10. Write `findings/cw-quotability.json`.
+10. **Stated boundaries** (`QUOTE-013`) — product, pricing and docs pages that make three or
+    more capability claims ("supports", "integrates with", "works with") while carrying no
+    specification table and no explicit limits. Asked whether the product does something it
+    does not, an assistant has nothing on the page to contradict a plausible guess, so it
+    invents the capability and the brand inherits the support ticket.
+11. **Comprehension judgment — you do this, not the script.** After the script finishes,
+    read the homepage's `raw.first_screen_text` from the evidence bundle and apply
+    [references/judgment-rubric.md](references/judgment-rubric.md): can a first-time reader
+    say (a) what this is, (b) who it is for, (c) what to do next — quoting the exact text
+    for each? The script matches definitional *sentence shapes*, which misses a bakery that
+    opens "Every loaf we bake starts at 4am" and is fooled by "a leading provider of
+    best-in-class solutions". Comprehension is the actual question and a language model is
+    the right instrument for it. Emit any resulting finding as `QUOTE-001-J` with
+    `"confidence": "medium"` and `"method": "agent-judgment"`, never overwriting the
+    script's result — if you disagree with it, say so explicitly in the evidence. A
+    judgment finding with no verbatim quote is inadmissible; drop it.
+12. Write `findings/cw-quotability.json`.
 
 ```bash
 python scripts/probe_quotability.py --workspace ./ws
@@ -97,3 +113,5 @@ this pillar). `high` — slogan-only hero, unattributed sections, missing fact c
 
 - `references/answer-shape.md` — the four properties, the checks, and rewrite patterns
   with before/after examples
+- `references/judgment-rubric.md` — the one place the agent judges rather than measures,
+  and the rules that keep that honest (quote-backed, `-J` suffixed, never overwriting)

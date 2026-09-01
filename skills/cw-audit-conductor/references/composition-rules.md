@@ -31,7 +31,7 @@ useful than reordering alone, because it explains *why* the order is what it is.
 `READ-001` or `READ-002` fired at `high` or `critical` — meaning the site looks
 client-rendered and we could not execute its JavaScript.
 
-**Effect.** Every content-dependent finding (`ANS-*`, `SDA-*`, `FRS-*`, and the
+**Effect.** Every content-dependent finding (`QUOTE-*`, `MARK-*`, `TIME-*`, and the
 content-reading `ENG-*`/`ENT-*` checks) is:
 - demoted one severity step,
 - set to `confidence: "low"`,

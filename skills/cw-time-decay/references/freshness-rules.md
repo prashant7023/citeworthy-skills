@@ -1,4 +1,4 @@
-# Freshness rules (FRS-*)
+# Freshness rules (TIME-*)
 
 ## Date-source precedence
 

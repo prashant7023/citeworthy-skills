@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-probe_time_decay.py -- FRS-* checks: is the fact still true, and can a machine tell?
+probe_time_decay.py -- TIME-* checks: is the fact still true, and can a machine tell?
 
 Stage 4a. Retrieval systems weight recency heavily, because a confidently stated
 stale fact is the failure mode users punish hardest. Two distinct problems live

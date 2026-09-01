@@ -8,7 +8,7 @@ Check-id prefixes name the pipeline stage they guard: **REACH** (can a bot get i
 **READ** (can it parse), **MARK** (machine-readable facts), **QUOTE** (quotable prose),
 **ENTITY** (does the web agree), **TIME** (is it still true), **STAY** (does the visitor remain).
 
-**91 checks across 7 skills.**
+**93 checks across 7 skills.** All are proven able to fire — see `tests/`.
 
 ## REACH-* — Access — can a crawler reach the page?
 
@@ -37,6 +37,7 @@ Pillar: `access` · Skill: `cw-reach-gate`
 | `REACH-019` | low | No /llms.txt curated entry point for AI agents |
 | `REACH-020` | medium | robots.txt declares the same user-agent in more than one group |
 | `REACH-021` | critical | Different URLs return byte-identical page content |
+| `REACH-022` | critical | A bot-protection service is serving challenge pages instead of content |
 
 ## READ-* — Parse — can a machine read what a human sees?
 
@@ -94,6 +95,7 @@ Pillar: `extract` · Skill: `cw-quotability`
 | `QUOTE-010` | low | Domain acronyms are used without ever being expanded |
 | `QUOTE-011` | low | Performance claims lack the baseline that makes them quotable |
 | `QUOTE-012` | low | A quarter of internal links carry no descriptive anchor text |
+| `QUOTE-013` | medium | Pages state what the product does but never what it does not |
 
 ## ENTITY-* — Trust (identity) — does the wider web agree?
 
@@ -157,5 +159,8 @@ Pillar: `engage` · Skill: `cw-arrival-experience`
   distinguish *clean* from *never looked*.
 - `REACH-002` is `low` by design: blocking training-corpus crawlers is a policy choice, not a
   defect. Only blocking answer-time retrieval agents (`REACH-001`) is critical.
-- `REACH-021` (identical bodies across URLs) and `REACH-008` (entry point fails) both mark the
-  whole audit inconclusive and suppress the score — a crawl that read nothing is never a pass.
+- `REACH-008`, `REACH-021` and `REACH-022` each mark the whole audit inconclusive and suppress
+  the score — a crawl that read nothing is never reported as a pass.
+- `QUOTE-001-J` is the marketplace's only agent-judgment finding. It is quote-backed, always
+  `medium` confidence, and never overwrites the script's `QUOTE-001`. See
+  `cw-quotability/references/judgment-rubric.md`.

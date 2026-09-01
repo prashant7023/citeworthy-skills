@@ -137,28 +137,88 @@ def phase_onsite(args, manifest, docs, find):
             if netloc.endswith(domain):
                 anchors.add(label)
 
-    if len(anchors) < 2:
-        find.add("ENTITY-001", "The site links to almost no authoritative profiles of itself", "high",
-                 f"Across {total} crawled pages, links or sameAs entries were found to only "
-                 f"{len(anchors)} recognised identity authority/authorities "
-                 f"({', '.join(sorted(anchors)) or 'none'}). An entity is resolved by triangulation: "
-                 "a system matches the site against known profiles to decide which real-world "
-                 "organisation it is. With no anchors, the brand exists only as a domain name and is "
-                 "easily confused with, or lost behind, similarly-named entities.",
+    # Entity resolution is a weight of evidence, not a count of links. "Fewer than two
+    # profiles = fail" punishes a single-location business whose Google Business Profile
+    # is genuinely the right and sufficient anchor, while passing a startup that links
+    # two social accounts nobody corroborates. Score the signals instead, show the
+    # arithmetic in the finding, and abstain in the middle band.
+    KNOWLEDGE_GRAPH = {"Wikipedia", "Wikidata"}
+    PROFESSIONAL = {"LinkedIn", "Crunchbase", "Companies House", "OpenCorporates"}
+    REVIEW = {"G2", "Capterra", "Trustpilot", "Glassdoor", "Product Hunt"}
+    LOCAL = {"Google Business"}
+    DEVELOPER = {"GitHub", "App Store", "Google Play"}
+
+    score, breakdown = 0, []
+
+    def award(points, label, condition):
+        nonlocal score
+        if condition:
+            score += points
+            breakdown.append(f"{label} +{points}")
+
+    # The site states its own name in machine-readable form -- the anchor everything
+    # else attaches to. Worth the most because without it there is nothing to resolve.
+    award(25, "declared Organization name", bool(declared_names))
+    award(20, "knowledge-graph entry", bool(anchors & KNOWLEDGE_GRAPH))
+    award(20, "professional/registry profile", bool(anchors & PROFESSIONAL))
+    award(15, "independent review platform", bool(anchors & REVIEW))
+    award(15, "verified local listing", bool(anchors & LOCAL))
+    award(10, "developer or app-store presence", bool(anchors & DEVELOPER))
+    award(10, "social profiles", bool(anchors - KNOWLEDGE_GRAPH - PROFESSIONAL
+                                      - REVIEW - LOCAL - DEVELOPER))
+
+    # A dictionary-word brand is harder to resolve no matter how many profiles exist.
+    generic_name = bool(re.fullmatch(r"[a-z]{3,10}", (brand_guess or "").lower())) and \
+        brand_guess.lower() in {
+            "apple", "delta", "shell", "orange", "target", "amazon", "mercury", "jaguar",
+            "prime", "square", "stripe", "notion", "arc", "brex", "ramp", "loop", "atlas",
+            "north", "summit", "vertex", "apex", "nova", "echo", "pulse", "spark", "comet"}
+    if generic_name:
+        score -= 15
+        breakdown.append("generic/colliding brand name -15")
+
+    score = max(0, min(100, score))
+    detail = f"EntityScore {score}/100 [{', '.join(breakdown) or 'no signals'}]"
+
+    if score < 40:
+        find.add("ENTITY-001", "The brand is weakly resolvable as a real-world entity", "high",
+                 f"{detail}. Anchors found across {total} crawled pages: "
+                 f"{', '.join(sorted(anchors)) or 'none'}. An entity is resolved by "
+                 "triangulation -- a system matches the site against known profiles to decide "
+                 "which real-world organisation it is. Below 40 the evidence is too thin for that "
+                 "to succeed, so the brand exists mainly as a domain name and is easily confused "
+                 "with similarly-named entities.",
                  "Claim and link the profiles that act as identity anchors, and reference them in sameAs.",
-                 ["Claim your LinkedIn company page, Crunchbase profile, Google Business Profile and "
-                  "the review platform your industry uses (G2, Capterra, Trustpilot).",
+                 ["Claim the profiles that matter for your category: LinkedIn and Crunchbase for "
+                  "B2B, a Google Business Profile for anything with a physical location, G2 or "
+                  "Capterra for software, Trustpilot for consumer.",
                   "Link them from the site footer and list all of them in Organization.sameAs.",
                   "Use the identical brand name and one-sentence description on every profile.",
                   "Ensure each profile links back to the canonical domain -- the claim has to be "
                   "verifiable in both directions.",
-                  "For a company with genuine third-party coverage, pursue a Wikidata item: it is the "
-                  "identity graph many systems resolve against, and it is editable by anyone with "
-                  "sources."],
+                  "For a company with genuine third-party coverage, pursue a Wikidata item: it is "
+                  "the identity graph many systems resolve against, and it is editable by anyone "
+                  "with sources."],
                  effort="medium", owner="marketing",
-                 metrics={"anchors_found": sorted(anchors)})
+                 metrics={"entity_score": score, "breakdown": breakdown,
+                          "anchors_found": sorted(anchors)})
+    elif score < 60:
+        find.add("ENTITY-001", "Entity resolution rests on a narrow set of signals", "low",
+                 f"{detail}. Anchors: {', '.join(sorted(anchors)) or 'none'}. There is enough "
+                 "evidence for a system to identify the brand, but little redundancy -- if the one "
+                 "corroborating profile is stale or a namesake outranks it, resolution degrades. "
+                 "Reported at low severity because this is a resilience gap, not a present defect.",
+                 "Add one or two anchors from a category you do not yet cover.",
+                 ["Identify which signal class is missing (knowledge graph, professional registry, "
+                  "review platform, local listing) and claim the most relevant one.",
+                  "Keep the name and description byte-identical to the site's own.",
+                  "Re-check in a quarter; anchors decay when profiles go unmaintained."],
+                 effort="low", owner="marketing", confidence="medium",
+                 metrics={"entity_score": score, "breakdown": breakdown,
+                          "anchors_found": sorted(anchors)})
     else:
-        find.note(f"Identity anchors present: {', '.join(sorted(anchors))}.")
+        find.note(f"Entity resolution looks sound. {detail}. "
+                  f"Anchors: {', '.join(sorted(anchors))}.")
 
     # -- ENTITY-002: description consistency across the site's own surfaces -----
     descriptions = {}

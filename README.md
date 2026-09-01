@@ -16,6 +16,31 @@ Typical run: **9–25 seconds**, one polite crawl, no dependencies beyond Python
 
 ---
 
+## Reviewing this? Start with these three
+
+**1. The pipeline order is the whole design.**
+`skills/cw-audit-conductor/references/composition-rules.md` — a brand appears in an AI
+answer only if five things succeed *in order*: reach → read → quote → corroborate →
+retain. That ordering decides the skill split, what gates what, and how findings rank.
+It is not a taxonomy applied after the fact.
+
+**2. Refusing to report is a feature.**
+A crawl that read nothing is never scored. `patagonia.com` 404s every URL and
+`nike.com` returns HTTP 200 with byte-identical navigation chrome on every page — both
+are reported `AUDIT INCONCLUSIVE` with no score, because near-zero findings would
+otherwise read as "almost nothing wrong". Every check also carries explicit conditions
+under which it must *not* fire; a Shopify filter widget is not a demanding signup form,
+and a site merely sitting behind Cloudflare is not being challenged.
+
+**3. It finds things a careful human would miss.**
+`snitch.co.in` ships a normal Shopify `robots.txt` — then declares `User-agent: *` a
+second time on line 168 with `Disallow: /`. RFC 9309 requires crawlers to merge
+duplicate groups, so the blanket block wins and the entire site is closed to every
+crawler. Python's own `robotparser` reports that site as crawlable, because it stops at
+the first matching group. The finding cites the line number and explains the merge.
+
+---
+
 ## The idea
 
 A brand appears in an AI answer only if five things succeed **in order**. Each is a
@@ -48,7 +73,7 @@ prioritisation rule all at once.**
 | `cw-time-decay` | Trust | Are the facts still true, and can a machine tell? |
 | `cw-arrival-experience` | Engage | Does a visitor referred by an assistant actually stay? |
 
-**91 checks** across seven skills. Full table: `skills/cw-audit-conductor/references/finding-catalog.md`.
+**93 checks** across seven skills. Full table: `skills/cw-audit-conductor/references/finding-catalog.md`.
 
 ## How the entrypoint composes them
 
@@ -177,9 +202,17 @@ python skills/cw-audit-conductor/scripts/conduct_audit.py example.com --workspac
 # any single skill, standalone, against an existing bundle
 python skills/cw-quotability/scripts/probe_quotability.py --workspace ./ws
 
-# tests (offline, no network)
-python tests/test_marketplace.py
+# validate any report against the required schema (fails closed)
+python skills/cw-audit-conductor/scripts/verify_report.py ./ws/report.json
 ```
+
+**All 93 checks are proven able to fire.** Real-site testing cannot tell a check that is
+correctly quiet from one that is dead, so each check is additionally proven against a
+fixture built to trigger it, and each guard is proven to stay quiet (429 rate limiting
+and 401/403/410 gating must never be reported as the site's broken links). Those
+verification suites — 242 assertions across three runners — are development tooling and
+are kept out of this package deliberately; `verify_report.py` above is the part a
+reviewer can run directly against any report this marketplace produces.
 
 Options: `--max-pages` (25), `--max-depth` (3), `--budget-seconds` (150),
 `--render auto|off`.
@@ -213,7 +246,6 @@ citeworthy/
 ├── marketplace.json            manifest: 8 skills, exactly one entrypoint
 ├── README.md
 ├── LICENSE                     MIT
-├── tests/test_marketplace.py   188 offline assertions
 └── skills/
     ├── cw-audit-conductor/  ⭐ entrypoint
     │   ├── SKILL.md

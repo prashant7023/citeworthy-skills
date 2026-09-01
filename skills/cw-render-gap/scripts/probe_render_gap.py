@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-probe_render_gap.py -- RND-* checks: can a machine READ what a human sees?
+probe_render_gap.py -- READ-* checks: can a machine READ what a human sees?
 
 Stage 2. Answers the second of the three questions that gate visibility:
 reach (access) -> READ (this skill) -> extract a fact (structured data + answers).

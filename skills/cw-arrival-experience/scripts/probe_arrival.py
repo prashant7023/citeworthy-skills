@@ -308,10 +308,30 @@ def main():
                  effort="low", owner="content", affected_urls=generic_only[:20])
 
     # -- STAY-008: form friction ------------------------------------------------
+    # Only forms that ASK THE VISITOR FOR SOMETHING count. A storefront's filter and
+    # sort widgets are also <form> elements -- often 15+ checkboxes and range sliders --
+    # but they are a convenience, not friction, and counting them inverts the finding.
+    # A lead-capture form submits (POST) and collects at least one identity field; a
+    # filter form is GET, mostly checkboxes/ranges, and its fields are named `filter.*`.
+    IDENTITY_FIELD = {"email", "tel", "password", "text", "textarea", "number"}
     heavy_forms = []
     for page in docs:
         for form in best_view(page)[0].get("forms", []):
             fields = form.get("fields", [])
+            if not fields:
+                continue
+            names = " ".join((f.get("name") or "").lower() for f in fields)
+            types = [f.get("type", "") for f in fields]
+            selectors = sum(1 for t in types if t in ("checkbox", "radio", "range"))
+            looks_like_filter = (
+                form.get("method", "get") == "get"
+                and (selectors / len(fields) > 0.5
+                     or re.search(r"\b(filter|sort|facet|refine)[.\-_]", names)))
+            if looks_like_filter:
+                continue
+            asks_for_identity = any(t in IDENTITY_FIELD for t in types)
+            if not asks_for_identity:
+                continue
             required = [f for f in fields if f.get("required")]
             if len(fields) >= 7 or len(required) >= 5:
                 heavy_forms.append({"url": page["url"], "fields": len(fields),

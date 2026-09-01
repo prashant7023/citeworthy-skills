@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-probe_schema_truth.py -- SDA-* checks: is the fact machine-readable AND consistent?
+probe_schema_truth.py -- MARK-* checks: is the fact machine-readable AND consistent?
 
 Stage 3a. Structured data is the only channel where a site states a fact in a
 form a machine cannot misread. This skill checks three separate things, which

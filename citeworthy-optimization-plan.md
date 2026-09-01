@@ -55,6 +55,9 @@ not count on them for content coverage, and don't schedule deep manual analysis 
 
 ## Phase 1 — Get ground truth (before touching the tool) ☐
 
+Recording sheet, scorer, and AI prompts: `evaluation/` (see `evaluation/README.md`).
+Do not introduce a BI tool; `python evaluation/score.py` is the report.
+
 For each site, ask ChatGPT, Perplexity and Claude:
 
 1. "What does [brand] do?"
@@ -194,29 +197,27 @@ between *"correctly quiet"* and *"broken"*. Two commands settle it:
 
 ```bash
 python tests/verify_citeworthy.py        # 228 assertions: behaviour + false-positive guards
-python tests/probe_check_liveness.py     # every check must fire on a triggering fixture
+python tests/probe_check_liveness.py     # 26 analyzer checks fire on triggering fixtures
+python tests/probe_crawl_checks.py       # 5 crawl checks fire against a local HTTP server
+python tests/test_eval_score.py          # 31 assertions on the scoring harness
 ```
 
-**Current state — 91 checks:**
+**Current state — 91 checks, all proven able to fire:**
 
 | Evidence of liveness | Count |
 |---|---|
 | Fired on a real site across 19 audits | 63 |
-| Proven live on a purpose-built fixture | 26 |
+| Proven live on a purpose-built analyzer fixture | 26 |
+| Proven live against a local HTTP fixture server | 5 |
 | Covered by unit tests | 5 |
-| **Total proven able to fire** | **86 / 91 (95%)** |
+| **Total proven able to fire** | **91 / 91 (100%)** |
 
-**The 5 not yet proven** are all crawl-level checks in `harvest_site.py` that need a live
-HTTP response, so no offline fixture reaches them. Verify each opportunistically when a
-real site exhibits it, or by pointing the tool at a local test server:
-
-| Check | Detects | Cheapest way to confirm |
-|---|---|---|
-| `REACH-003` | robots.txt syntax errors | The underlying parser *is* unit-tested; only the finding wrapper is unproven |
-| `REACH-009` | internally-linked pages returning 4xx/5xx | Raise `--max-pages` on a large site; broken links appear at depth |
-| `REACH-010` | `nosnippet` / `max-snippet:0` | Common on paywalled news — try a publisher site |
-| `REACH-011` | no HTTPS | Nearly extinct; find any legacy `http://`-only site |
-| `REACH-015` | server responses over 2500 ms | Try a small self-hosted or shared-hosting site |
+The five crawl-level checks (`REACH-003/009/010/011/015`) live inside `harvest_site.py`
+and are computed from live HTTP behaviour, so no static bundle reaches them.
+`tests/probe_crawl_checks.py` stands up a throwaway server on localhost that misbehaves
+in one specific way per scenario and asserts the right check fires — and, just as
+importantly, that the wrong ones stay quiet (429 rate limiting and 401/403/410 gating
+must never be blamed on the site).
 
 Anything that reports **NOT LIVE** is dead code, not strictness — fix it before shipping.
 
@@ -248,8 +249,8 @@ Resist tuning against these sites too. Rotate in fresh ones for another round.
 - [x] README explains each skill and how the entrypoint composes them
 - [ ] Report reads clearly top-to-bottom for a non-technical person — **get one actual
       non-technical person to read `report.md` and tell you what they'd do first**
-- [ ] Delete the stale `brand-ai-readiness-audit/` copy (drifted: 89 checks vs 91) —
-      it is file-locked; close it in your editor first
+- [x] Stale `brand-ai-readiness-audit/` copy removed from the submission zip (packaging
+      now excludes `.git`, `__pycache__` and workspaces)
 - [ ] Final `zip` from a clean tree; confirm no `__pycache__` and exactly one entrypoint
 
 ---

@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 ws/
 workspace*/
+evaluation/results.json
+evaluation/runs/

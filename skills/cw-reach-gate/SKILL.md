@@ -18,7 +18,7 @@ allowed-tools: Bash, Read
 Stage 1 of the pipeline, and the gate for everything after it. If a crawler cannot
 fetch the page, nothing about its content matters.
 
-This skill has two jobs: report `ACC-*` access findings, **and** produce the evidence
+This skill has two jobs: report `REACH-*` access findings, **and** produce the evidence
 bundle every other skill in the marketplace consumes. Crawling once and analysing many
 times is what keeps the whole audit under five minutes and under one site's worth of
 polite traffic.
@@ -130,5 +130,5 @@ auditing a site you own and must never be used on a third party's site.
 ## References
 
 - `references/ai-crawler-reference.md` — every agent, its class, and what blocking it costs
-- `references/reach-checks.md` — the full `ACC-*` check table with thresholds
+- `references/reach-checks.md` — the full `REACH-*` check table with thresholds
 - `references/evidence-bundle-format.md` — the evidence-bundle contract

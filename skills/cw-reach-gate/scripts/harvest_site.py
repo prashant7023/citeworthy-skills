@@ -14,7 +14,7 @@ Outputs (under --workspace):
   pages/<id>.json                   one normalised parsed-page record per fetched URL
   pages/<id>.raw.html               raw server HTML (verbatim, for citable evidence)
   pages/<id>.rendered.html          post-JS DOM when a renderer is available
-  findings/cw-reach-gate.json  ACC-* findings
+  findings/cw-reach-gate.json  REACH-* findings
 """
 import argparse
 import gzip
@@ -74,6 +74,82 @@ PRIVATE_PATH = re.compile(
     r"|admin|checkout|cart|basket|billing|payment|order|my-?account|auth|oauth|logout"
     r"|password|reset|subscribe/confirm|wp-admin|wp-login)(?:[/?#]|$)", re.I)
 PRIVATE_HOST = re.compile(r"^(?:app|dashboard|admin|my|account|portal|secure|login|auth|post|submit|upload)\.", re.I)
+
+# Bot-protection challenge pages, by vendor. These return HTTP 200 with a body that
+# is an interstitial, not content -- so status codes alone say the crawl succeeded.
+# Naming the vendor is what makes the finding actionable: "Cloudflare is challenging
+# AI crawlers" points at a specific dashboard, where "the site looks empty" does not.
+CHALLENGE_VENDORS = {
+    "Cloudflare": {
+        "title": ["just a moment", "attention required", "checking your browser",
+                  "please wait", "security check"],
+        "body": ["cf-browser-verification", "challenges.cloudflare.com", "cf_chl",
+                 "cloudflare ray id", "cf-turnstile", "_cf_chl_opt"],
+        "headers": ["cf-ray", "cf-mitigated"],
+    },
+    "Akamai": {
+        "title": ["access denied", "reference #"],
+        "body": ["_abck", "ak_bmsc", "akamaighost", "_akamaiclientdata",
+                 "errors.edgesuite.net"],
+        "headers": ["x-akamai-transformed", "akamai-grn"],
+    },
+    "Imperva/Incapsula": {
+        "title": ["request unsuccessful", "incapsula"],
+        "body": ["_incapsula_resource", "incap_ses", "visid_incap"],
+        "headers": ["x-iinfo", "x-cdn"],
+    },
+    "DataDome": {
+        "title": ["blocked", "verification required"],
+        "body": ["datadome", "dd_cookie_test", "captcha-delivery.com"],
+        "headers": ["x-datadome", "x-dd-b"],
+    },
+    "PerimeterX/HUMAN": {
+        "title": ["access to this page has been denied"],
+        "body": ["_px", "perimeterx", "px-captcha", "human-security"],
+        "headers": ["x-px"],
+    },
+    "AWS WAF": {
+        "title": ["request blocked"],
+        "body": ["awswaf", "aws-waf-token", "challenge.js"],
+        "headers": ["x-amzn-waf-action"],
+    },
+    "Sucuri": {
+        "title": ["sucuri website firewall"],
+        "body": ["sucuri_cloudproxy", "cloudproxy"],
+        "headers": ["x-sucuri-id"],
+    },
+}
+
+
+def detect_challenge(html, headers, title, word_count):
+    """Identify a bot-protection interstitial served under a 200 status.
+
+    Requires a content signal (title or body marker) rather than headers alone --
+    a huge share of the web sits behind Cloudflare perfectly happily, so the
+    presence of `cf-ray` proves nothing on its own. Header hits only corroborate.
+    """
+    lowered_html = (html or "")[:20000].lower()
+    lowered_title = (title or "").lower()
+    header_keys = {k.lower() for k in (headers or {})}
+    for vendor, sig in CHALLENGE_VENDORS.items():
+        title_hit = any(p in lowered_title for p in sig["title"])
+        body_hit = any(p in lowered_html for p in sig["body"])
+        if not (title_hit or body_hit):
+            continue
+        # A real page that merely mentions a vendor script is not a challenge:
+        # challenge interstitials are content-free.
+        if word_count > 250 and not title_hit:
+            continue
+        header_hit = [h for h in sig["headers"] if h in header_keys]
+        evidence = []
+        if title_hit:
+            evidence.append(f"title matched a {vendor} challenge phrase")
+        if body_hit:
+            evidence.append(f"body carried a {vendor} challenge marker")
+        if header_hit:
+            evidence.append(f"headers included {', '.join(header_hit)}")
+        return {"vendor": vendor, "signals": evidence, "word_count": word_count}
+    return None
 # Paths a well-run site SHOULD exclude from crawling: search result permutations,
 # faceted filters, user areas, alternate formats, honeypot traps. Blocking these is
 # correct practice, so REACH-018 must not scold a site for doing the right thing.
@@ -1159,13 +1235,46 @@ def main():
     # A 200 response is not proof the crawl read anything. Bot-challenge pages and
     # client-rendered routes both return 200 with byte-identical chrome on every URL.
     # Measuring distinct bodies catches that; status codes alone do not.
-    body_signatures = {}
+    body_signatures, challenged = {}, []
     for url, rec in fetched.items():
         if rec["non_html"] or not rec["parsed"] or rec["response"].get("status") != 200:
             continue
         text = (rec["parsed"].get("text") or "").strip()
         digest = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:12]
         body_signatures.setdefault(digest, []).append(url)
+        hit = detect_challenge(rec["response"].get("text", ""),
+                               rec["response"].get("headers", {}),
+                               rec["parsed"].get("title", ""),
+                               rec["parsed"].get("word_count", 0))
+        if hit:
+            challenged.append({"url": url, **hit})
+
+    if challenged:
+        vendors = sorted({c["vendor"] for c in challenged})
+        first = challenged[0]
+        finding("REACH-022", "A bot-protection service is serving challenge pages instead of content",
+                "critical",
+                f"{len(challenged)}/{len(html_pages)} crawled pages returned HTTP 200 but the body is "
+                f"a {' / '.join(vendors)} challenge interstitial, not the page. Example: "
+                f"{first['url']} ({first['word_count']} words; {'; '.join(first['signals'])}). "
+                "Because the status is 200, uptime monitoring and naive crawl tools report the site "
+                "as healthy. Answer-time retrieval agents do not solve JavaScript challenges, so they "
+                "receive this interstitial and index nothing -- the site is invisible to AI assistants "
+                "while appearing perfectly fine to a browser.",
+                {"summary": f"Allowlist the documented AI retrieval agents in {' / '.join(vendors)} "
+                            "so they receive content instead of a challenge.",
+                 "steps": [f"In the {vendors[0]} dashboard, add a bot rule that allows the verified "
+                           "AI crawlers (OAI-SearchBot, ChatGPT-User, Claude-User, Claude-SearchBot, "
+                           "PerplexityBot) by their published user-agents and IP ranges.",
+                           "Verify with `curl -A 'OAI-SearchBot' <url> | wc -w` -- a real page returns "
+                           "hundreds of words, a challenge returns a handful.",
+                           "Keep the challenge for genuinely abusive traffic; scope the exception to "
+                           "the documented, IP-verifiable agents rather than disabling protection.",
+                           "If challenging must continue, return a 403 rather than a 200 so the block "
+                           "is at least honest and monitorable."],
+                 "effort": "medium", "owner": "infrastructure"},
+                affected_urls=[c["url"] for c in challenged[:20]],
+                metrics={"vendors": vendors, "challenged_pages": len(challenged)})
     distinct_bodies = len(body_signatures)
     largest_group = max(body_signatures.values(), key=len, default=[])
     duplicate_ratio = (len(largest_group) / max(1, len(html_pages))) if html_pages else 0.0
@@ -1216,13 +1325,45 @@ def main():
                            "Allowlist the documented AI retrieval agents by UA and published IP ranges."],
                  "effort": "medium", "owner": "infrastructure"})
 
-    errors = [p for p in page_index if p["status"] and 400 <= p["status"] < 600]
+    # Not every non-2xx is a broken link, and blaming the site for all of them is a
+    # false positive with three distinct causes:
+    #   401/403 -- deliberately gated content, working as designed
+    #   410     -- an explicit, correct "this is gone" signal
+    #   429     -- OUR rate limiting tripped the site; an audit artefact, never a defect
+    # Only genuinely broken responses are counted.
+    GATED = {401, 403}
+    DELIBERATE = {410}
+    SELF_INFLICTED = {429}
+    errors, gated, throttled = [], [], []
+    for p in page_index:
+        status = p.get("status")
+        if not status or status < 400 or status >= 600:
+            continue
+        if status in SELF_INFLICTED:
+            throttled.append(p)
+        elif status in GATED or status in DELIBERATE:
+            gated.append(p)
+        else:
+            errors.append(p)
+
+    if throttled:
+        notes.append(
+            f"{len(throttled)} URL(s) returned 429 (rate limited). That is this audit's own "
+            "crawl rate, not a site defect, so it is excluded from REACH-009. Re-run with a "
+            "higher --delay-ms for full coverage of those URLs.")
+    if gated:
+        notes.append(
+            f"{len(gated)} URL(s) returned 401/403/410. Treated as deliberately gated or "
+            "retired rather than broken, so excluded from REACH-009. Example: "
+            f"{gated[0]['url']} -> {gated[0]['status']}.")
+
     if errors and html_pages:
         pct = round(100 * len(errors) / max(1, len(page_index)))
         sample = "; ".join(f"{e['url']} -> {e['status']}" for e in errors[:5])
         finding("REACH-009", "Internally-linked pages return error status codes",
                 "high" if pct >= 20 else "medium",
-                f"{len(errors)}/{len(page_index)} crawled URLs ({pct}%) returned 4xx/5xx while being "
+                f"{len(errors)}/{len(page_index)} crawled URLs ({pct}%) returned a genuine error "
+                f"(4xx/5xx excluding 401/403/410 gating and 429 rate limiting) while being "
                 f"linked from within the site. Examples: {sample}. Broken internal links waste crawl "
                 "budget and break the paths a crawler uses to reach real content.",
                 {"summary": "Fix or 301-redirect the broken internal links, then remove them from the sitemap.",
@@ -1313,21 +1454,41 @@ def main():
                            "Keep canonical, sitemap and internal link URLs byte-identical."],
                  "effort": "low", "owner": "web/dev"})
 
-    slow = [(u, r["response"]["elapsed_ms"]) for u, r in fetched.items()
-            if r["response"].get("elapsed_ms", 0) > 2500 and r["response"].get("status") == 200]
-    if slow and html_pages and len(slow) >= max(1, len(html_pages) * 0.3):
-        median = sorted(x[1] for x in slow)[len(slow) // 2]
-        finding("REACH-015", "Server responses are slow enough to cost crawl budget and visitors",
-                "medium",
-                f"{len(slow)}/{len(html_pages)} pages took over 2500 ms to respond (median of the slow "
-                f"set: {median} ms). Example: {slow[0][0]} at {slow[0][1]} ms. Retrieval agents fetch "
-                "under short timeouts and drop slow sources; human visitors abandon at the same threshold.",
-                {"summary": "Cut server response time below ~800 ms with caching and a CDN.",
-                 "steps": ["Put full-page or edge caching in front of anonymous HTML responses.",
-                           "Profile the slowest templates and fix N+1 queries / uncached API calls.",
-                           "Serve from a CDN close to the audience and enable compression."],
-                 "effort": "medium", "owner": "infrastructure"},
-                pillar="engagement")
+    # Latency is the noisiest thing this audit measures, so the statistic has to be
+    # robust to the three ways a naive version goes wrong:
+    #   - one slow page (a cold cache, a heavy report) is not a slow site
+    #   - the first request pays DNS + TLS setup that later ones would amortise
+    #   - transient congestion on the auditor's own network is not the site's fault
+    # A median over the whole sample absorbs all three; a count of outliers does not.
+    # Reporting "median of the slow set" would also be circular -- that set is already
+    # filtered to exceed the threshold, so its median always does too.
+    timings = sorted(r["response"]["elapsed_ms"] for r in fetched.values()
+                     if r["response"].get("status") == 200
+                     and r["response"].get("elapsed_ms") is not None)
+    # Drop the single slowest sample: on a small crawl that is usually the connection
+    # warm-up rather than a representative response.
+    representative = timings[:-1] if len(timings) >= 5 else timings
+    if len(representative) >= 4:
+        median_ms = representative[len(representative) // 2]
+        slow = [(u, r["response"]["elapsed_ms"]) for u, r in fetched.items()
+                if r["response"].get("elapsed_ms", 0) > 2500
+                and r["response"].get("status") == 200]
+        if median_ms > 2500:
+            finding("REACH-015", "Server responses are slow enough to cost crawl budget and visitors",
+                    "medium",
+                    f"Median server response across {len(representative)} sampled pages is "
+                    f"{median_ms} ms (range {representative[0]}-{representative[-1]} ms; "
+                    f"{len(slow)} page(s) over 2500 ms). The slowest sample is excluded as "
+                    "connection warm-up, and each timing includes TLS setup because the crawler "
+                    "does not reuse connections -- so treat this as a screening signal and confirm "
+                    "with a real performance tool before sizing the work. Retrieval agents fetch "
+                    "under short timeouts and drop slow sources; visitors abandon at the same point.",
+                    {"summary": "Cut server response time below ~800 ms with caching and a CDN.",
+                     "steps": ["Put full-page or edge caching in front of anonymous HTML responses.",
+                               "Profile the slowest templates and fix N+1 queries / uncached API calls.",
+                               "Serve from a CDN close to the audience and enable compression."],
+                     "effort": "medium", "owner": "infrastructure"},
+                    pillar="engagement")
 
     long_chains = [(u, r["response"].get("redirects", [])) for u, r in fetched.items()
                    if len(r["response"].get("redirects", [])) >= 3]
@@ -1457,7 +1618,7 @@ def main():
         "skill": "cw-reach-gate",
         "pillar": "access",
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "checks_run": [f"REACH-{n:03d}" for n in range(1, 22)],
+        "checks_run": [f"REACH-{n:03d}" for n in range(1, 23)],
         "pages_analysed": len(page_index),
         "findings": findings,
         "notes": notes,

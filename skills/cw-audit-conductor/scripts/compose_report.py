@@ -303,11 +303,33 @@ def main():
     duplicate_ratio = manifest.get("duplicate_body_ratio", 0.0)
     distinct_bodies = manifest.get("distinct_text_bodies")
     soft_blocked = ok_pages >= 4 and duplicate_ratio >= 0.6
+
+    # Third failure mode: the crawl succeeded but read almost nothing. A
+    # client-rendered shell serves 200 OK with a few dozen words and no links, so
+    # link-following finds no second page. Every prevalence denominator is then 1,
+    # which reads as "100% of pages" and escalates severity on a sample far too
+    # small to describe a site. A genuinely small brochure site is different: it
+    # has real prose, so the word floor lets it through and keeps its score.
+    sampled_words = sum(p.get("word_count", 0) for p in manifest.get("pages", [])
+                        if p.get("status") == 200)
+    thin_sample = ok_pages > 0 and ok_pages < 3 and sampled_words < 300
+
     inconclusive = (ok_pages == 0
                     or (crawled >= 3 and ok_pages / max(1, crawled) < 0.34)
-                    or soft_blocked)
+                    or soft_blocked
+                    or thin_sample)
     inconclusive_note = None
-    if soft_blocked:
+    if thin_sample:
+        inconclusive_note = (
+            f"AUDIT INCONCLUSIVE. The crawl obtained only {ok_pages} usable page(s) totalling "
+            f"{sampled_words} words, which is too small a sample to describe a site. Findings "
+            "below are computed over that one sample, so their prevalence figures ('1/1 pages') "
+            "read as site-wide when they are not, and no score is reported. This is the "
+            "signature of a client-rendered application whose server response carries no prose "
+            "and no links for a crawler to follow. Re-run with a browser renderer "
+            "(pip install playwright && playwright install chromium); if the site genuinely is "
+            "a single page, the access and content findings still stand on their own terms.")
+    elif soft_blocked:
         inconclusive_note = (
             f"AUDIT INCONCLUSIVE. {int(duplicate_ratio * 100)}% of the {ok_pages} pages that "
             f"returned HTTP 200 served byte-identical content ({distinct_bodies} distinct bodies "
