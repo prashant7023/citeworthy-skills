@@ -1,4 +1,4 @@
-# citeworthy
+# brand-ai-readiness-audit
 
 An Agent Skill Marketplace that points a general AI agent at any website and produces an
 audit of **why AI assistants fail to find, read, quote or correctly describe the brand**,
@@ -7,19 +7,43 @@ fixes.
 
 Recommend-only. Read-only. Nothing in this marketplace ever modifies a live site.
 
-```bash
-python skills/cw-audit-conductor/scripts/conduct_audit.py example.com \
-  --workspace ./ws --markdown
-```
+## How it is invoked
 
-Typical run: **9–25 seconds**, one polite crawl, no dependencies beyond Python 3.9+.
+Install the marketplace in an agent harness and ask in plain language:
+
+> "Evaluate this website: example.com"
+> "Why doesn't ChatGPT mention our brand?"
+> "Audit example.com for AI visibility"
+
+The entrypoint skill `audit-orchestrator` picks the request up, runs the pillars in
+order and returns one report. There is no separate interface to stand up and no server
+to connect to.
+
+**Scripts are an accelerator, not the method.** Where a Python runtime exists the
+entrypoint runs one bundled command — one agent turn instead of eight, which matters
+because the five-minute budget includes inference latency. Where it does not, the same
+audit runs from the skills' own reference tables using the harness's web tools. Both
+paths produce the same report shape; the script path is faster and its counts are
+exhaustive rather than sampled.
+
+Typical scripted run: **9–25 seconds** of wall clock, one polite crawl, no dependencies
+beyond the Python standard library.
+
+### On rendering
+
+A local browser is **not** assumed. In a sandbox without one, `render-extraction-audit` obtains
+its second sample from the agent's own web-fetch tool — most such tools return
+post-JavaScript HTML, which is exactly what the raw-vs-rendered comparison needs. Only
+when neither is available does it fall back to a documented heuristic, and it labels
+those findings as heuristic rather than asserting them. Playwright is referenced as a
+local-development convenience and nothing depends on it.
 
 ---
 
 ## Reviewing this? Start with these three
 
 **1. The pipeline order is the whole design.**
-`skills/cw-audit-conductor/references/composition-rules.md` — a brand appears in an AI
+`skills/audit-orchestrator/references/composition-rules.md` — a brand appears in an AI
 answer only if five things succeed *in order*: reach → read → quote → corroborate →
 retain. That ordering decides the skill split, what gates what, and how findings rank.
 It is not a taxonomy applied after the fact.
@@ -64,16 +88,16 @@ prioritisation rule all at once.**
 
 | Skill | Pillar | What it answers |
 |---|---|---|
-| **`cw-audit-conductor`** ⭐ | — | *Entrypoint.* Runs the others in causal order, applies four cross-skill rules, emits and validates the single report. |
-| `cw-reach-gate` | Access | Can a crawler reach the site? Also produces the shared evidence bundle. |
-| `cw-render-gap` | Parse | Can a machine read what a human sees? |
-| `cw-schema-truth` | Extract | Are the facts machine-readable — and do they agree with the page? |
-| `cw-quotability` | Extract | Are the facts *quotable* as prose? |
-| `cw-entity-consensus` | Trust | Does the wider web identify and corroborate the brand? |
-| `cw-time-decay` | Trust | Are the facts still true, and can a machine tell? |
-| `cw-arrival-experience` | Engage | Does a visitor referred by an assistant actually stay? |
+| **`audit-orchestrator`** ⭐ | — | *Entrypoint.* Runs the others in causal order, applies four cross-skill rules, emits and validates the single report. |
+| `crawl-access-audit` | Access | Can a crawler reach the site? Also produces the shared evidence bundle. |
+| `render-extraction-audit` | Parse | Can a machine read what a human sees? |
+| `structured-data-audit` | Extract | Are the facts machine-readable — and do they agree with the page? |
+| `answer-extractability-audit` | Extract | Are the facts *quotable* as prose? |
+| `entity-corroboration-audit` | Trust | Does the wider web identify and corroborate the brand? |
+| `freshness-audit` | Trust | Are the facts still true, and can a machine tell? |
+| `engagement-audit` | Engage | Does a visitor referred by an assistant actually stay? |
 
-**93 checks** across seven skills. Full table: `skills/cw-audit-conductor/references/finding-catalog.md`.
+**93 checks** across seven skills. Full table: `skills/audit-orchestrator/references/finding-catalog.md`.
 
 ## How the entrypoint composes them
 
@@ -100,11 +124,11 @@ decomposition therefore produces a **shorter** action list than a monolith would
 **4. Prioritising.** `severity × confidence × pillar stage`, so earlier-stage fixes that
 unblock everything downstream rank first.
 
-Details and rationale: `skills/cw-audit-conductor/references/composition-rules.md`.
+Details and rationale: `skills/audit-orchestrator/references/composition-rules.md`.
 
 ## Architecture: crawl once, analyze many
 
-`cw-reach-gate` performs the **only** network I/O in the marketplace and writes an
+`crawl-access-audit` performs the **only** network I/O in the marketplace and writes an
 evidence bundle. Every other skill is a pure function of that bundle.
 
 ```
@@ -135,7 +159,7 @@ Always includes the required schema, and extends it:
   "audited_at": "2026-08-27T14:32:00Z",
   "summary": {
     "total_findings": 16, "critical": 0, "high": 3, "medium": 5, "low": 8,
-    "citeworthy_score": 72,
+    "ai_readiness_score": 72,
     "pillar_scores": {"access": 77, "parse": 95, "extract": 46, "trust": 78, "engage": 65},
     "headline": "3 high-severity issues limit how this site is found, read and cited."
   },
@@ -153,7 +177,7 @@ Always includes the required schema, and extends it:
     },
     // extensions:
     "check_id": "QUOTE-001", "pillar": "extract", "confidence": "high",
-    "source_skill": "cw-quotability", "affected_urls": [...],
+    "source_skill": "answer-extractability-audit", "affected_urls": [...],
     "related_check_ids": ["ENTITY-002", "MARK-004"]
   }],
   "root_causes": [...],              // findings grouped by shared cause
@@ -164,7 +188,7 @@ Always includes the required schema, and extends it:
 }
 ```
 
-Full contract: `skills/cw-audit-conductor/references/report-schema.json`.
+Full contract: `skills/audit-orchestrator/references/report-schema.json`.
 
 ## Design commitments
 
@@ -194,16 +218,16 @@ backstop, never as a solution to client-side rendering.
 
 ```bash
 # full pipeline (crawl → 6 analyzers → compose → validate)
-python skills/cw-audit-conductor/scripts/conduct_audit.py example.com --workspace ./ws --markdown
+python skills/audit-orchestrator/scripts/conduct_audit.py example.com --workspace ./ws --markdown
 
 # with off-site corroboration: the agent writes probe_results.json, then
-python skills/cw-audit-conductor/scripts/conduct_audit.py example.com --workspace ./ws --merge-probes
+python skills/audit-orchestrator/scripts/conduct_audit.py example.com --workspace ./ws --merge-probes
 
 # any single skill, standalone, against an existing bundle
-python skills/cw-quotability/scripts/probe_quotability.py --workspace ./ws
+python skills/answer-extractability-audit/scripts/probe_quotability.py --workspace ./ws
 
 # validate any report against the required schema (fails closed)
-python skills/cw-audit-conductor/scripts/verify_report.py ./ws/report.json
+python skills/audit-orchestrator/scripts/verify_report.py ./ws/report.json
 ```
 
 **All 93 checks are proven able to fire.** Real-site testing cannot tell a check that is
@@ -242,22 +266,22 @@ Python 3.9+. **No required dependencies** — standard library only. Playwright 
 ## Repository layout
 
 ```
-citeworthy/
+brand-ai-readiness-audit/
 ├── marketplace.json            manifest: 8 skills, exactly one entrypoint
 ├── README.md
 ├── LICENSE                     MIT
 └── skills/
-    ├── cw-audit-conductor/  ⭐ entrypoint
+    ├── audit-orchestrator/  ⭐ entrypoint
     │   ├── SKILL.md
     │   ├── scripts/            compose_report.py, verify_report.py, conduct_audit.py
     │   └── references/         composition-rules, severity-model, finding-catalog, report-schema
-    ├── cw-reach-gate/     SKILL.md, scripts/harvest_site.py, references/ (3)
-    ├── cw-render-gap/
-    ├── cw-schema-truth/
-    ├── cw-quotability/
-    ├── cw-entity-consensus/
-    ├── cw-time-decay/
-    └── cw-arrival-experience/
+    ├── crawl-access-audit/     SKILL.md, scripts/harvest_site.py, references/ (3)
+    ├── render-extraction-audit/
+    ├── structured-data-audit/
+    ├── answer-extractability-audit/
+    ├── entity-corroboration-audit/
+    ├── freshness-audit/
+    └── engagement-audit/
 ```
 
 Every skill folder independently satisfies the agentskills.io spec: YAML frontmatter with
