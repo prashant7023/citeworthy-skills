@@ -342,7 +342,19 @@ def main():
             "site does not challenge.")
     elif inconclusive:
         statuses = sorted({str(p.get("status")) for p in manifest.get("pages", [])})
-        inconclusive_note = (
+        # 429 is our own crawl rate, not the site's policy. Listing it alongside
+        # "the site blocks bots" would tell an owner to go fix a WAF rule that is
+        # working correctly, when the real fix is to slow this audit down.
+        if statuses == ["429"]:
+            inconclusive_note = (
+                f"AUDIT INCONCLUSIVE. Every fetched URL returned HTTP 429 (rate limited). "
+                "That is this audit's own request rate, not a defect in the site and not a "
+                "bot block -- the site is defending itself correctly. No score is reported "
+                "because nothing was read. Re-run with a larger --delay-ms (try 1000) and a "
+                "smaller --max-pages, or wait a few minutes; a site that recently served "
+                "another crawl will throttle the next one.")
+        else:
+            inconclusive_note = (
             f"AUDIT INCONCLUSIVE. Only {ok_pages} of {crawled} fetched URL(s) returned usable "
             f"HTML (status codes seen: {', '.join(statuses) or 'none'}). The content, structured-data, "
             "freshness and engagement checks had almost nothing to read, so their silence means "
