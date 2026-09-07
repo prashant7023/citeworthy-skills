@@ -1,103 +1,118 @@
+<div align="center">
+
 # brand-ai-readiness-audit
 
-An Agent Skill Marketplace that points a general AI agent at any website and produces an
-audit of **why AI assistants fail to find, read, quote or correctly describe the brand**,
-and **why visitors who do arrive don't stay** — with evidence, severity, and prioritized
-fixes.
+**An Agent Skill Marketplace that audits *why* AI assistants fail to find, read, quote, or correctly describe your brand — and why the visitors who do arrive don't stay.**
 
-Recommend-only. Read-only. Nothing in this marketplace ever modifies a live site.
+Evidence-backed. Severity-ranked. Prioritized fixes.
+
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)
+![Dependencies](https://img.shields.io/badge/dependencies-stdlib%20only-brightgreen.svg)
+![Checks](https://img.shields.io/badge/checks-93-informational.svg)
+![Skills](https://img.shields.io/badge/skills-8-informational.svg)
+
+**🔒 Recommend-only · Read-only · Nothing here ever modifies a live site.**
+
+</div>
+
+---
+
+## Table of Contents
+
+- [How it's invoked](#how-it-is-invoked)
+- [Reviewing this? Start with these three](#reviewing-this-start-with-these-three)
+- [The idea](#the-idea)
+- [The skills](#the-skills)
+- [How the entrypoint composes them](#how-the-entrypoint-composes-them)
+- [Architecture: crawl once, analyze many](#architecture-crawl-once-analyze-many)
+- [Output](#output)
+- [Design commitments](#design-commitments)
+- [Running it](#running-it)
+- [Guardrails](#guardrails)
+- [Requirements](#requirements)
+- [Repository layout](#repository-layout)
+- [License](#license)
+
+---
 
 ## How it is invoked
 
 Install the marketplace in an agent harness and ask in plain language:
 
-> "Evaluate this website: example.com"
-> "Why doesn't ChatGPT mention our brand?"
-> "Audit example.com for AI visibility"
+> *"Evaluate this website: example.com"*
+> *"Why doesn't ChatGPT mention our brand?"*
+> *"Audit example.com for AI visibility"*
 
-The entrypoint skill `audit-orchestrator` picks the request up, runs the pillars in
-order and returns one report. There is no separate interface to stand up and no server
-to connect to.
+The entrypoint skill **`audit-orchestrator`** picks the request up, runs the pillars in order, and returns **one report**. There is no separate interface to stand up and no server to connect to.
 
-**Scripts are an accelerator, not the method.** Where a Python runtime exists the
-entrypoint runs one bundled command — one agent turn instead of eight, which matters
-because the five-minute budget includes inference latency. Where it does not, the same
-audit runs from the skills' own reference tables using the harness's web tools. Both
-paths produce the same report shape; the script path is faster and its counts are
-exhaustive rather than sampled.
+> **Scripts are an accelerator, not the method.** Where a Python runtime exists, the entrypoint runs one bundled command — one agent turn instead of eight, which matters because the five-minute budget includes inference latency. Where it does not, the same audit runs from the skills' own reference tables using the harness's web tools. **Both paths produce the same report shape**; the script path is faster and its counts are exhaustive rather than sampled.
 
-Typical scripted run: **9–25 seconds** of wall clock, one polite crawl, no dependencies
-beyond the Python standard library.
+| | |
+|---|---|
+| ⏱️ **Typical scripted run** | 9–25 seconds of wall clock |
+| 🌐 **Network footprint** | One polite crawl |
+| 📦 **Dependencies** | None beyond the Python standard library |
 
 ### On rendering
 
-A local browser is **not** assumed. In a sandbox without one, `render-extraction-audit` obtains
-its second sample from the agent's own web-fetch tool — most such tools return
-post-JavaScript HTML, which is exactly what the raw-vs-rendered comparison needs. Only
-when neither is available does it fall back to a documented heuristic, and it labels
-those findings as heuristic rather than asserting them. Playwright is referenced as a
-local-development convenience and nothing depends on it.
+A local browser is **not** assumed. In a sandbox without one, `render-extraction-audit` obtains its second sample from the agent's own web-fetch tool — most such tools return post-JavaScript HTML, which is exactly what the raw-vs-rendered comparison needs. Only when neither is available does it fall back to a documented heuristic, and it **labels those findings as heuristic** rather than asserting them. Playwright is referenced as a local-development convenience — nothing depends on it.
 
 ---
 
 ## Reviewing this? Start with these three
 
-**1. The pipeline order is the whole design.**
-`skills/audit-orchestrator/references/composition-rules.md` — a brand appears in an AI
-answer only if five things succeed *in order*: reach → read → quote → corroborate →
-retain. That ordering decides the skill split, what gates what, and how findings rank.
-It is not a taxonomy applied after the fact.
+> **1. The pipeline order *is* the whole design.**
+> `skills/audit-orchestrator/references/composition-rules.md` — a brand appears in an AI answer only if five things succeed *in order*: **reach → read → quote → corroborate → retain**. That ordering decides the skill split, what gates what, and how findings rank. It is not a taxonomy applied after the fact.
 
-**2. Refusing to report is a feature.**
-A crawl that read nothing is never scored. `patagonia.com` 404s every URL and
-`nike.com` returns HTTP 200 with byte-identical navigation chrome on every page — both
-are reported `AUDIT INCONCLUSIVE` with no score, because near-zero findings would
-otherwise read as "almost nothing wrong". Every check also carries explicit conditions
-under which it must *not* fire; a Shopify filter widget is not a demanding signup form,
-and a site merely sitting behind Cloudflare is not being challenged.
+> **2. Refusing to report is a feature.**
+> A crawl that read nothing is never scored. `patagonia.com` 404s every URL and `nike.com` returns HTTP 200 with byte-identical navigation chrome on every page — both are reported **`AUDIT INCONCLUSIVE`** with no score, because near-zero findings would otherwise read as *"almost nothing wrong."* Every check also carries explicit conditions under which it must **not** fire; a Shopify filter widget is not a demanding signup form, and a site merely sitting behind Cloudflare is not being "challenged."
 
-**3. It finds things a careful human would miss.**
-`snitch.co.in` ships a normal Shopify `robots.txt` — then declares `User-agent: *` a
-second time on line 168 with `Disallow: /`. RFC 9309 requires crawlers to merge
-duplicate groups, so the blanket block wins and the entire site is closed to every
-crawler. Python's own `robotparser` reports that site as crawlable, because it stops at
-the first matching group. The finding cites the line number and explains the merge.
+> **3. It finds things a careful human would miss.**
+> `snitch.co.in` ships a normal Shopify `robots.txt` — then declares `User-agent: *` a *second time* on line 168 with `Disallow: /`. RFC 9309 requires crawlers to merge duplicate groups, so the blanket block wins and the **entire site is closed to every crawler**. Python's own `robotparser` reports that site as crawlable, because it stops at the first matching group. The finding cites the line number and explains the merge.
 
 ---
 
 ## The idea
 
-A brand appears in an AI answer only if five things succeed **in order**. Each is a
-pillar, each is a skill, and each gates the next:
+A brand appears in an AI answer only if **five things succeed in order**. Each is a pillar, each is a skill, and each gates the next.
 
-```
-   ┌─────────┐   ┌────────┐   ┌──────────┐   ┌────────┐   ┌────────┐
-   │ ACCESS  │──▶│ PARSE  │──▶│ EXTRACT  │──▶│ TRUST  │──▶│ ENGAGE │
-   └─────────┘   └────────┘   └──────────┘   └────────┘   └────────┘
-    Can a bot     Can a       Can it lift    Does the      Does the
-    reach it?     machine     a specific     wider web     visitor
-                  read it?    fact?          agree?        stay?
+```mermaid
+flowchart LR
+    A["🔍 <b>ACCESS</b><br/>Can a bot<br/>reach it?"] --> B["📄 <b>PARSE</b><br/>Can a machine<br/>read it?"]
+    B --> C["✂️ <b>EXTRACT</b><br/>Can it lift a<br/>specific fact?"]
+    C --> D["🤝 <b>TRUST</b><br/>Does the wider<br/>web agree?"]
+    D --> E["⏱️ <b>ENGAGE</b><br/>Does the visitor<br/>stay?"]
+
+    style A fill:#e8f0fe,stroke:#4285f4,stroke-width:2px
+    style B fill:#e6f4ea,stroke:#34a853,stroke-width:2px
+    style C fill:#fef7e0,stroke:#fbbc04,stroke-width:2px
+    style D fill:#fce8e6,stroke:#ea4335,stroke-width:2px
+    style E fill:#f3e8fd,stroke:#a142f4,stroke-width:2px
 ```
 
-Failure at any stage makes every later stage irrelevant — a perfectly written page behind
-`Disallow: /` is invisible, and a perfectly crawlable page whose only pricing lives in a
-PNG cannot be quoted. **This ordering is the decomposition, the composition logic, and the
-prioritisation rule all at once.**
+**Failure at any stage makes every later stage irrelevant.** A perfectly written page behind `Disallow: /` is invisible. A perfectly crawlable page whose only pricing lives in a PNG cannot be quoted.
+
+> This ordering is the decomposition, the composition logic, **and** the prioritization rule — all at once.
+
+---
 
 ## The skills
 
 | Skill | Pillar | What it answers |
 |---|---|---|
 | **`audit-orchestrator`** ⭐ | — | *Entrypoint.* Runs the others in causal order, applies four cross-skill rules, emits and validates the single report. |
-| `crawl-access-audit` | Access | Can a crawler reach the site? Also produces the shared evidence bundle. |
-| `render-extraction-audit` | Parse | Can a machine read what a human sees? |
-| `structured-data-audit` | Extract | Are the facts machine-readable — and do they agree with the page? |
-| `answer-extractability-audit` | Extract | Are the facts *quotable* as prose? |
-| `entity-corroboration-audit` | Trust | Does the wider web identify and corroborate the brand? |
-| `freshness-audit` | Trust | Are the facts still true, and can a machine tell? |
-| `engagement-audit` | Engage | Does a visitor referred by an assistant actually stay? |
+| `crawl-access-audit` | **Access** | Can a crawler reach the site? Also produces the shared evidence bundle. |
+| `render-extraction-audit` | **Parse** | Can a machine read what a human sees? |
+| `structured-data-audit` | **Extract** | Are the facts machine-readable — and do they agree with the page? |
+| `answer-extractability-audit` | **Extract** | Are the facts *quotable* as prose? |
+| `entity-corroboration-audit` | **Trust** | Does the wider web identify and corroborate the brand? |
+| `freshness-audit` | **Trust** | Are the facts still true, and can a machine tell? |
+| `engagement-audit` | **Engage** | Does a visitor referred by an assistant actually stay? |
 
 **93 checks** across the seven analyzer skills (the entrypoint composes rather than checks). Full table: `skills/audit-orchestrator/references/finding-catalog.md`.
+
+---
 
 ## How the entrypoint composes them
 
@@ -105,31 +120,58 @@ Seven analyzers producing seven lists would be a pile, not a marketplace. The en
 four things that are statements about the *relationship between* findings — which is
 precisely why they cannot live inside any individual skill:
 
-**1. Gating.** A critical access failure marks every downstream finding `blocked_by`.
-Those fixes are still correct; they just cannot take effect while the gate is closed. A
-report that lists "add FAQ schema" as item three while the site disallows `OAI-SearchBot`
-has misled its reader about what to do on Monday.
+<table>
+<tr><td width="26px" align="center"><b>1</b></td><td>
 
-**2. Confounding — the main false-positive control.** If the crawler could not execute
-JavaScript *and* the site looks client-rendered, then "no H1" may describe **our blind
-spot**, not the site. Those findings are retained, demoted to `low` confidence, labelled
-`confounded_by`, and given the exact command to verify them. Asserting them destroys
-credibility; dropping them hides real defects. Labelling them is the honest third option.
+**Gating.** A critical access failure marks every downstream finding `blocked_by`. Those fixes are still correct — they just cannot take effect while the gate is closed. A report that lists *"add FAQ schema"* as item three while the site disallows `OAI-SearchBot` has misled its reader about what to do on Monday.
 
-**3. Linking.** A missing definitional sentence is simultaneously an extractability
-defect, a corroboration defect and an engagement defect. Three skills each correctly
-report their own symptom; only the entrypoint sees that one rewrite closes all three. The
-decomposition therefore produces a **shorter** action list than a monolith would.
+</td></tr>
+<tr><td align="center"><b>2</b></td><td>
 
-**4. Prioritising.** `severity × confidence × pillar stage`, so earlier-stage fixes that
-unblock everything downstream rank first.
+**Confounding — the main false-positive control.** If the crawler could not execute JavaScript *and* the site looks client-rendered, then "no H1" may describe **our blind spot**, not the site. Those findings are retained, demoted to `low` confidence, labelled `confounded_by`, and given the exact command to verify them. Asserting them destroys credibility; dropping them hides real defects. **Labelling them is the honest third option.**
+
+</td></tr>
+<tr><td align="center"><b>3</b></td><td>
+
+**Linking.** A missing definitional sentence is simultaneously an extractability defect, a corroboration defect, and an engagement defect. Three skills each correctly report their own symptom; only the entrypoint sees that **one rewrite closes all three**. The decomposition therefore produces a *shorter* action list than a monolith would.
+
+</td></tr>
+<tr><td align="center"><b>4</b></td><td>
+
+**Prioritizing.** `severity × confidence × pillar stage` — so earlier-stage fixes that unblock everything downstream rank first.
+
+</td></tr>
+</table>
 
 Details and rationale: `skills/audit-orchestrator/references/composition-rules.md`.
 
+---
+
 ## Architecture: crawl once, analyze many
 
-`crawl-access-audit` performs the **only** network I/O in the marketplace and writes an
-evidence bundle. Every other skill is a pure function of that bundle.
+`crawl-access-audit` performs the **only** network I/O in the marketplace and writes an evidence bundle. Every other skill is a **pure function** of that bundle.
+
+```mermaid
+flowchart TB
+    W(("🌐 Website")) -->|"one bounded,<br/>rate-limited,<br/>robots-respecting fetch"| CA["crawl-access-audit"]
+    CA --> EB[("📦 Evidence Bundle<br/>manifest.json + pages/*.json + raw HTML")]
+
+    EB --> S1["render-extraction-audit"]
+    EB --> S2["structured-data-audit"]
+    EB --> S3["answer-extractability-audit"]
+    EB --> S4["entity-corroboration-audit"]
+    EB --> S5["freshness-audit"]
+    EB --> S6["engagement-audit"]
+
+    S1 & S2 & S3 & S4 & S5 & S6 --> ORCH["⭐ audit-orchestrator<br/>(gate · confound · link · prioritize)"]
+    ORCH --> R["📄 report.json + report.md"]
+
+    style W fill:#f3e8fd,stroke:#a142f4,stroke-width:2px
+    style CA fill:#e8f0fe,stroke:#4285f4,stroke-width:2px
+    style EB fill:#fef7e0,stroke:#fbbc04,stroke-width:2px
+    style ORCH fill:#fce8e6,stroke:#ea4335,stroke-width:2px
+    style R fill:#e6f4ea,stroke:#34a853,stroke-width:2px
+```
 
 ```
 <workspace>/
@@ -137,17 +179,21 @@ evidence bundle. Every other skill is a pure function of that bundle.
   pages/<id>.json      normalised parsed page (raw + rendered views)
   pages/<id>.raw.html  verbatim server HTML — every evidence claim is re-checkable
   findings/<skill>.json
-  report.json          ← the deliverable
-  report.md            human-readable companion
+  report.json           ← the deliverable
+  report.md              human-readable companion
 ```
 
 This buys four properties the rubric cares about directly:
 
-- **Deterministic** — same bundle, same findings, every time (asserted by the test suite).
-- **Fast** — one crawl for eight skills; analysis is local and takes seconds.
-- **Polite** — a site sees one bounded, rate-limited, robots-respecting crawl.
-- **Auditable** — the raw HTML is on disk, so any evidence claim can be re-verified.
-- **Testable offline** — analyzers run against fixture bundles with no network at all.
+| Property | Why it matters |
+|---|---|
+| **Deterministic** | Same bundle, same findings, every time (asserted by the test suite) |
+| **Fast** | One crawl for eight skills; analysis is local and takes seconds |
+| **Polite** | A site sees one bounded, rate-limited, robots-respecting crawl |
+| **Auditable** | Raw HTML is on disk, so any evidence claim can be re-verified |
+| **Testable offline** | Analyzers run against fixture bundles with **no network at all** |
+
+---
 
 ## Output
 
@@ -177,42 +223,34 @@ Always includes the required schema, and extends it:
     },
     // extensions:
     "check_id": "QUOTE-001", "pillar": "extract", "confidence": "high",
-    "source_skill": "answer-extractability-audit", "affected_urls": [...],
+    "source_skill": "answer-extractability-audit", "affected_urls": [ "..." ],
     "related_check_ids": ["ENTITY-002", "MARK-004"]
   }],
-  "root_causes": [...],              // findings grouped by shared cause
-  "proactive_recommendations": [...], // 7+ improvements beyond the defects found
-  "remediation_plan": [...],          // 4 sequenced phases, each item once
-  "limitations": [...],               // what was NOT verified — never reported as passing
-  "scope": {...}, "method": {...}     // pages crawled, checks run, scoring formula
+  "root_causes": [ "..." ],              // findings grouped by shared cause
+  "proactive_recommendations": [ "..." ], // 7+ improvements beyond the defects found
+  "remediation_plan": [ "..." ],          // 4 sequenced phases, each item once
+  "limitations": [ "..." ],               // what was NOT verified — never reported as passing
+  "scope": { "...": "..." }, "method": { "...": "..." }  // pages crawled, checks run, scoring formula
 }
 ```
 
 Full contract: `skills/audit-orchestrator/references/report-schema.json`.
 
+---
+
 ## Design commitments
 
-**Evidence or it doesn't ship.** `verify_report.py` fails closed on the schema *and* on
-an evidence-quality gate: every finding must cite a measured quantity and a traceable
-check id. A plausible title with vague evidence is rejected by the build.
+- **Evidence or it doesn't ship.** `verify_report.py` fails closed on the schema *and* on an evidence-quality gate: every finding must cite a measured quantity and a traceable check id. A plausible title with vague evidence is rejected by the build.
 
-**Unevaluated is never "passing".** Every skill records `checks_run` whether or not a check
-fires, so the report distinguishes *we checked and it's fine* from *we didn't check*.
-Anything not verified lands in `limitations`.
+- **Unevaluated is never "passing."** Every skill records `checks_run` whether or not a check fires, so the report distinguishes *we checked and it's fine* from *we didn't check*. Anything not verified lands in `limitations`.
 
-**Guarded checks.** Every check has explicit conditions under which it must *not* fire —
-minimum sample sizes, required corroborating signals, site-type gating (a charity is never
-asked for a price list). The test suite keeps a deliberately healthy fixture that must stay
-quiet.
+- **Guarded checks.** Every check has explicit conditions under which it must **not** fire — minimum sample sizes, required corroborating signals, site-type gating (a charity is never asked for a price list). The test suite keeps a deliberately healthy fixture that must stay quiet.
 
-**Trade-offs are not defects.** Blocking `GPTBot` (training) is reported as an
-informational policy choice; blocking `OAI-SearchBot` (retrieval) is critical. Gated
-pricing is reported as a trade-off with a stated cost, not a bug. Getting this wrong is
-the fastest way to lose a reader's trust in every other finding.
+- **Trade-offs are not defects.** Blocking `GPTBot` (training) is reported as an *informational* policy choice; blocking `OAI-SearchBot` (retrieval) is *critical*. Gated pricing is reported as a trade-off with a stated cost, not a bug. Getting this wrong is the fastest way to lose a reader's trust in every other finding.
 
-**Fixes are mechanism-sound.** Each carries ordered steps, an effort estimate and an owner.
-Where a fix is a symptom-patch, the text says so — a `<noscript>` block is described as a
-backstop, never as a solution to client-side rendering.
+- **Fixes are mechanism-sound.** Each carries ordered steps, an effort estimate, and an owner. Where a fix is a symptom-patch, the text says so — a `<noscript>` block is described as a *backstop*, never as a solution to client-side rendering.
+
+---
 
 ## Running it
 
@@ -230,38 +268,33 @@ python skills/answer-extractability-audit/scripts/probe_quotability.py --workspa
 python skills/audit-orchestrator/scripts/verify_report.py ./ws/report.json
 ```
 
-**All 93 checks are proven able to fire.** Real-site testing cannot tell a check that is
-correctly quiet from one that is dead, so each check is additionally proven against a
-fixture built to trigger it, and each guard is proven to stay quiet (429 rate limiting
-and 401/403/410 gating must never be reported as the site's broken links). Those
-verification suites — 242 assertions across three runners — are development tooling and
-are kept out of this package deliberately; `verify_report.py` above is the part a
-reviewer can run directly against any report this marketplace produces.
+> **All 93 checks are proven able to fire.** Real-site testing cannot tell a check that is correctly quiet from one that is dead, so each check is additionally proven against a fixture built to trigger it, and each guard is proven to stay quiet (429 rate limiting and 401/403/410 gating must never be reported as the site's broken links). Those verification suites — **242 assertions across three runners** — are development tooling and are kept out of this package deliberately; `verify_report.py` above is the part a reviewer can run directly against any report this marketplace produces.
 
-Options: `--max-pages` (25), `--max-depth` (3), `--budget-seconds` (150),
-`--render auto|off`.
+**Options:** `--max-pages` (25) · `--max-depth` (3) · `--budget-seconds` (150) · `--render auto|off`
 
-**Optional:** `pip install playwright && playwright install chromium`. With it, the
-raw-vs-rendered gap is *measured* rather than inferred, and every content check runs at
-full confidence. Without it, the audit still runs and says exactly what it could not
-verify.
+**Optional:** `pip install playwright && playwright install chromium`. With it, the raw-vs-rendered gap is *measured* rather than inferred, and every content check runs at full confidence. Without it, the audit still runs and says exactly what it could not verify.
+
+---
 
 ## Guardrails
 
-- **Recommend-only** — audits and reports; never alters a site.
-- **Read-only** — GET requests only. No forms, no POST, no authentication.
-- **Never touches authenticated areas** — `/login`, `/checkout`, `/account`, `app.`,
-  `dashboard.` and similar are filtered by path and subdomain before fetching.
-- **Respects robots.txt** — for the auditor's own user-agent, with the site's
-  `Crawl-delay` honoured.
-- **Bounded** — hard caps on pages, depth, concurrency and wall-clock time.
+| Guardrail | Detail |
+|---|---|
+| 🔒 **Recommend-only** | Audits and reports; never alters a site |
+| 🔍 **Read-only** | GET requests only — no forms, no POST, no authentication |
+| 🚫 **No authenticated areas** | `/login`, `/checkout`, `/account`, `app.`, `dashboard.`, and similar are filtered by path and subdomain **before fetching** |
+| 🤖 **Respects `robots.txt`** | For the auditor's own user-agent, with the site's `Crawl-delay` honoured |
+| ⏳ **Bounded** | Hard caps on pages, depth, concurrency, and wall-clock time |
 
-Verified by the test suite: no write HTTP methods anywhere, and no network I/O in any
-analyzer.
+> Verified by the test suite: **no write HTTP methods anywhere**, and **no network I/O in any analyzer**.
+
+---
 
 ## Requirements
 
-Python 3.9+. **No required dependencies** — standard library only. Playwright is optional.
+**Python 3.9+.** No required dependencies — standard library only. Playwright is optional.
+
+---
 
 ## Repository layout
 
@@ -284,12 +317,9 @@ brand-ai-readiness-audit/
     └── engagement-audit/
 ```
 
-Every skill folder independently satisfies the agentskills.io spec: YAML frontmatter with
-`name`, `description`, `license` and `allowed-tools`, and `When to use` / `Inputs` /
-`Procedure` / `Output` sections, with detail pushed to `references/` and executable logic
-to `scripts/` (progressive disclosure). Each analyzer vendors its own copy of `evidence.py`
-so no skill imports across folder boundaries — deliberate, so any folder can be lifted out
-and used alone.
+Every skill folder independently satisfies the **agentskills.io** spec: YAML frontmatter with `name`, `description`, `license`, and `allowed-tools`, plus `When to use` / `Inputs` / `Procedure` / `Output` sections — detail pushed to `references/`, executable logic to `scripts/` (progressive disclosure). Each analyzer vendors its own copy of `evidence.py` so **no skill imports across folder boundaries** — deliberate, so any folder can be lifted out and used alone.
+
+---
 
 ## License
 
