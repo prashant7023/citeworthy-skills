@@ -786,8 +786,15 @@ def classify(url, parsed):
         or ("pricing" in heads and bool(parsed.get("prices_in_text"))))
     add("article", bool(re.search(r"/(blog|news|article|post|insights?|stories|resources)/", path + "/"))
         or bool(re.search(r"\b(posted|published) on\b", text)))
-    add("faq", bool(re.search(r"/(faq|faqs|help|support|questions)\b", path))
-        or sum(1 for h in parsed.get("headings", []) if h["text"].strip().endswith("?")) >= 3)
+    # An FAQ *block* is not an FAQ *page*. Storefronts routinely append a few
+    # question-shaped headings to a category page for SEO; treating that as the page's
+    # primary purpose mislabels the whole catalogue. A listing URL is authoritative
+    # about what the page is for, so the heuristic yields to it -- but "faq" still
+    # lands in page_tags, so the embedded block can still be recommended for markup.
+    add("faq", bool(re.search(r"/(faq|faqs|help|support|questions)", path))
+        or (not listing_url
+            and sum(1 for h in parsed.get("headings", [])
+                    if h["text"].strip().endswith("?")) >= 3))
     add("about", bool(re.search(r"/(about|about-us|company|who-we-are|our-story|team)\b", path)))
     add("contact", bool(re.search(r"/(contact|contact-us|get-in-touch|locations?|find-us)\b", path)))
     add("docs", bool(re.search(r"/(docs?|documentation|guide|api|reference|manual)/", path + "/")))

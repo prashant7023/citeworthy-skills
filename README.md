@@ -97,11 +97,11 @@ prioritisation rule all at once.**
 | `freshness-audit` | Trust | Are the facts still true, and can a machine tell? |
 | `engagement-audit` | Engage | Does a visitor referred by an assistant actually stay? |
 
-**93 checks** across seven skills. Full table: `skills/audit-orchestrator/references/finding-catalog.md`.
+**93 checks** across the seven analyzer skills (the entrypoint composes rather than checks). Full table: `skills/audit-orchestrator/references/finding-catalog.md`.
 
 ## How the entrypoint composes them
 
-Six analyzers producing six lists would be a pile, not a marketplace. The entrypoint adds
+Seven analyzers producing seven lists would be a pile, not a marketplace. The entrypoint adds
 four things that are statements about the *relationship between* findings — which is
 precisely why they cannot live inside any individual skill:
 

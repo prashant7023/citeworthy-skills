@@ -360,6 +360,13 @@ def main():
     # -- MARK-009: markup contradicts the visible page ------------------------
     drift = []
     for url, data in per_page.items():
+        # A category or search page carries Product markup for every tile in the grid,
+        # each with its own name and price. Comparing those against the page's own H1
+        # reports one "contradiction" per tile when nothing is contradictory at all --
+        # the markup describes items within the page, not the page itself. Drift is
+        # only meaningful where the page has a single dominant entity.
+        if data["page"].get("page_type") in ("listing", "homepage"):
+            continue
         view = data["view"]
         visible_text = view.get("text", "")
         visible_prices = set(view.get("prices_in_text", []))
