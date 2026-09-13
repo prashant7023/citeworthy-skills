@@ -32,6 +32,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib import request, error, parse
+import http.client
+
+# Some large sites send more than http.client's default cap of 100 response headers,
+# which would otherwise surface as a fetch error on a perfectly healthy page.
+http.client._MAXHEADERS = 1000
 
 UA_SELF = "BrandAIReadinessAudit/1.0 (+read-only site audit; respects robots.txt)"
 
@@ -62,6 +67,24 @@ TRAINING_AGENTS = {
     "Bytespider": "ByteDance corpus",
 }
 
+# robots.txt states a policy; a CDN or WAF can enforce a different one. These are the
+# published User-Agent strings of the AI search agents, used for one GET each against
+# the homepage. Googlebot and Bingbot are deliberately absent: CDNs routinely verify
+# those by reverse DNS and refuse impersonators, so a refusal would prove nothing.
+EDGE_PROBE_AGENTS = {
+    "OAI-SearchBot": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; "
+                     "OAI-SearchBot/1.0; +https://openai.com/searchbot",
+    "Claude-SearchBot": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; "
+                        "Claude-SearchBot/1.0; +https://www.anthropic.com)",
+    "PerplexityBot": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; "
+                     "PerplexityBot/1.0; +https://perplexity.ai/perplexitybot)",
+}
+BROWSER_CONTROL_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+# 429 is excluded: it means "too fast", not "not you".
+EDGE_REFUSAL_STATUS = {401, 403, 406, 503}
+SNIPPET_LIMIT = re.compile(r"max-snippet\s*:\s*(-?\d+)")
+
 SKIP_EXT = re.compile(
     r"\.(jpg|jpeg|png|gif|webp|avif|svg|ico|css|js|mjs|woff2?|ttf|eot|zip|gz|tar"
     r"|dmg|exe|mp4|webm|mp3|wav|xml|rss|atom)$", re.I)
@@ -74,6 +97,15 @@ PRIVATE_PATH = re.compile(
     r"|admin|checkout|cart|basket|billing|payment|order|my-?account|auth|oauth|logout"
     r"|password|reset|subscribe/confirm|wp-admin|wp-login)(?:[/?#]|$)", re.I)
 PRIVATE_HOST = re.compile(r"^(?:app|dashboard|admin|my|account|portal|secure|login|auth|post|submit|upload)\.", re.I)
+PRIORITY_PATH = re.compile(
+    r"/(?:about|about-us|company|who-we-are|our-story|contact|contact-us|pricing|plans|faqs?)"
+    r"(?:[/.?#]|$)", re.I)
+
+
+def url_key(url):
+    """Identity of a URL for de-duplication: host, path without trailing slash, query."""
+    p = parse.urlparse(url or "")
+    return (p.netloc.lower(), (p.path or "/").rstrip("/") or "/", p.query)
 
 # Bot-protection challenge pages, by vendor. These return HTTP 200 with a body that
 # is an interstitial, not content -- so status codes alone say the crawl succeeded.
@@ -199,7 +231,8 @@ class RobotsPolicy:
 
     def _parse(self):
         current, seen_rule = [], False
-        for lineno, raw_line in enumerate((self.raw or "").splitlines(), 1):
+        # A leading byte-order mark is not part of the first directive; crawlers skip it.
+        for lineno, raw_line in enumerate((self.raw or "").lstrip("﻿").splitlines(), 1):
             line = raw_line.split("#", 1)[0].strip()
             if not line:
                 continue
@@ -407,6 +440,9 @@ class PageExtract(HTMLParser):
         self._main_depth = 0
         self._hidden_depth = 0
         self._chrome_depth = 0
+        self._nosnippet_depth = 0
+        self.visible_chars = self.nosnippet_chars = 0
+        self.paragraph_words, self._paragraph_buf, self._in_paragraph = [], [], False
         self._heading_tag = None
         self._heading_buf = []
         self._cur_section = {"heading": None, "level": 0, "text_parts": []}
@@ -420,6 +456,12 @@ class PageExtract(HTMLParser):
         if self._in_noscript:
             self.noscript_parts.append(clean)
             return
+        if self._hidden_depth == 0:
+            self.visible_chars += len(clean)
+            if self._nosnippet_depth:
+                self.nosnippet_chars += len(clean)
+            if self._in_paragraph:
+                self._paragraph_buf.append(clean)
         if self._heading_tag:
             self._heading_buf.append(clean)
             return
@@ -432,6 +474,15 @@ class PageExtract(HTMLParser):
         # them as opening content makes a blank hero look informative.
         if len(self.first_nodes) < 60 and self._hidden_depth == 0 and self._chrome_depth == 0:
             self.first_nodes.append(clean)
+
+    def _close_paragraph(self):
+        # Real <p> lengths. Splitting page text on line breaks instead turned layouts
+        # built from inline elements into single multi-thousand-word "paragraphs".
+        if self._in_paragraph:
+            words = len(" ".join(self._paragraph_buf).split())
+            if words:
+                self.paragraph_words.append(words)
+        self._in_paragraph, self._paragraph_buf = False, []
 
     def _close_section(self):
         text = " ".join(self._cur_section["text_parts"]).strip()
@@ -454,6 +505,12 @@ class PageExtract(HTMLParser):
         if attr.get("aria-hidden") == "true" or "hidden" in attr:
             self._hidden_depth += 1
             self._stack.append("__hidden__")
+        if "data-nosnippet" in attr and tag not in VOID:
+            self._nosnippet_depth += 1
+            self._stack.append("__nosnippet__")
+        if tag == "p":
+            self._close_paragraph()               # an unclosed <p> ends where the next begins
+            self._in_paragraph = True
 
         if tag in ("script", "style", "svg"):
             if tag == "script" and attr.get("type", "").lower() in (
@@ -464,7 +521,8 @@ class PageExtract(HTMLParser):
             if tag == "script" and attr.get("src"):
                 self.scripts.append({"src": attr["src"], "async": "async" in attr,
                                      "defer": "defer" in attr,
-                                     "module": attr.get("type") == "module"})
+                                     "module": attr.get("type") == "module",
+                                     "in_head": not self.body_seen})
             return
         if self._skip:
             return
@@ -587,6 +645,8 @@ class PageExtract(HTMLParser):
             self.forms.append(self._form)
             self._form = None
 
+        if tag == "p":
+            self._close_paragraph()
         while self._stack and self._stack[-1] == "__hidden__":
             self._stack.pop()
             self._hidden_depth = max(0, self._hidden_depth - 1)
@@ -597,6 +657,8 @@ class PageExtract(HTMLParser):
                     self._hidden_depth = max(0, self._hidden_depth - 1)
                 elif popped == "__chrome__":
                     self._chrome_depth = max(0, self._chrome_depth - 1)
+                elif popped == "__nosnippet__":
+                    self._nosnippet_depth = max(0, self._nosnippet_depth - 1)
                 elif popped == tag:
                     break
         if tag in BLOCK:
@@ -617,6 +679,7 @@ class PageExtract(HTMLParser):
 
     def close(self):
         super().close()
+        self._close_paragraph()
         self._close_section()
 
 
@@ -694,6 +757,9 @@ def parse_html(html, base_url):
         "main_word_count": len(main_text.split()),
         "first_screen_text": _norm_text(extractor.first_nodes)[:4000],
         "noscript_text": _norm_text(extractor.noscript_parts)[:4000],
+        "visible_text_chars": extractor.visible_chars,
+        "data_nosnippet_chars": extractor.nosnippet_chars,
+        "paragraph_word_counts": extractor.paragraph_words[:400],
         "links": extractor.links[:600],
         "images": extractor.images[:300],
         "iframes": extractor.iframes[:60],
@@ -744,6 +810,24 @@ def registrable(host):
     return ".".join(parts[-2:])
 
 
+def brand_key_variants(host):
+    """Name-bearing labels of a host, used to recognise the brand's own other domains.
+
+    'www.icici.bank.in' -> {'icicibank', 'bank'}; 'www.bbc.co.uk' -> {'bbc'}. Short
+    trailing labels (com, co, uk, in) are dropped, and every suffix of what remains is a
+    candidate, so a subdomain such as 'shop.nike.in' still yields 'nike'.
+    """
+    labels = [l for l in (host or "").lower().split(":")[0].split(".") if l and l != "www"]
+    while len(labels) > 1 and len(labels[-1]) <= 3:
+        labels.pop()
+    return {"".join(labels[i:]) for i in range(len(labels))}
+
+
+def same_brand(site_root, host):
+    site = max(brand_key_variants(site_root), key=len, default="")
+    return len(site) >= 3 and site in brand_key_variants(host)
+
+
 def classify(url, parsed):
     """Deterministic page-type inference used by the schema + engagement skills.
 
@@ -791,10 +875,13 @@ def classify(url, parsed):
     # primary purpose mislabels the whole catalogue. A listing URL is authoritative
     # about what the page is for, so the heuristic yields to it -- but "faq" still
     # lands in page_tags, so the embedded block can still be recommended for markup.
-    add("faq", bool(re.search(r"/(faq|faqs|help|support|questions)", path))
-        or (not listing_url
-            and sum(1 for h in parsed.get("headings", [])
-                    if h["text"].strip().endswith("?")) >= 3))
+    # News fronts are full of question-shaped headlines, so a count alone labels a
+    # section page an FAQ. Questions must also dominate the page's section headings.
+    question_heads = sum(1 for h in parsed.get("headings", []) if h["text"].strip().endswith("?"))
+    section_heads = sum(1 for h in parsed.get("headings", []) if h["level"] in (2, 3))
+    add("faq", bool(re.search(r"/(faq|faqs|help|support|questions)\b", path))
+        or (not listing_url and question_heads >= 3
+            and question_heads >= 0.4 * max(1, section_heads)))
     add("about", bool(re.search(r"/(about|about-us|company|who-we-are|our-story|team)\b", path)))
     add("contact", bool(re.search(r"/(contact|contact-us|get-in-touch|locations?|find-us)\b", path)))
     add("docs", bool(re.search(r"/(docs?|documentation|guide|api|reference|manual)/", path + "/")))
@@ -935,6 +1022,20 @@ def main():
         notes.append("robots.txt returned an HTML document (likely a soft-404); treated as absent.")
     policy = RobotsPolicy(robots_text, robots_resp.get("status"), robots_url)
 
+    # If robots.txt got no response at all, check the homepage before spending the rest
+    # of the budget. A site that answers this client with nothing (timeouts, dropped
+    # connections) cannot be audited, and probing sitemaps, hosts and edge agents against
+    # it only burns minutes of the five-minute limit.
+    unreachable, early_home = False, None
+    if not robots_resp.get("status"):
+        early_home = fetch(start_url, timeout=10)
+        unreachable = not early_home.get("status")
+        if unreachable:
+            notes.append(f"{start_url} and robots.txt both returned no response to this client "
+                         f"({early_home.get('error') or early_home.get('tls_error') or 'no response'}). "
+                         "Sitemap, host, edge and page checks were skipped: nothing can be evaluated "
+                         "until the site answers.")
+
     blocked_retrieval, blocked_training = [], []
     for agent, purpose in RETRIEVAL_AGENTS.items():
         blocked, group, rule = policy.blanket_blocked(agent)
@@ -1033,6 +1134,11 @@ def main():
     elif robots_resp.get("status") == 404:
         notes.append("No robots.txt (404). Not a defect -- absence means 'crawl everything' -- but no "
                      "Sitemap directive is advertised to crawlers either.")
+    elif robots_resp.get("status") and 400 <= robots_resp["status"] < 500:
+        # RFC 9309 section 2.3.1.3: a 4xx on robots.txt means "unavailable", and crawlers
+        # may then access the site without restriction. That is not a block.
+        notes.append(f"robots.txt returned {robots_resp['status']}. Under RFC 9309 a 4xx means no "
+                     "rules apply, so crawlers may fetch the whole site; not scored as a defect.")
     elif robots_resp.get("status") not in (200, 404):
         finding("REACH-004", "robots.txt is unreachable or returns an error", "high",
                 f"GET {robots_url} -> status={robots_resp.get('status')} "
@@ -1044,8 +1150,10 @@ def main():
                            "Add a Sitemap: line pointing at the XML sitemap."],
                  "effort": "low", "owner": "infrastructure"})
 
-    # ---- llms.txt (proactive, emerging convention) ------------------------
-    llms_resp = fetch(f"{scheme}://{site_host}/llms.txt", timeout=8)
+    # ---- llms.txt (recorded, never scored) ---------------------------------
+    # No major AI search crawler documents reading llms.txt, so its absence is not a
+    # visibility defect. The status is kept in the manifest for anyone who wants it.
+    llms_resp = {"status": None} if unreachable else fetch(f"{scheme}://{site_host}/llms.txt", timeout=8)
     has_llms = (llms_resp.get("status") == 200
                 and "<html" not in llms_resp.get("text", "")[:300].lower())
 
@@ -1054,7 +1162,7 @@ def main():
         policy.sitemaps + [f"{scheme}://{site_host}/sitemap.xml",
                            f"{scheme}://{site_host}/sitemap_index.xml"]))
     sitemap_urls, sitemap_lastmods, sitemap_reports = [], [], []
-    for sm_url in sitemap_candidates[:4]:
+    for sm_url in ([] if unreachable else sitemap_candidates[:4]):
         resp = fetch(sm_url, timeout=12)
         ok = resp.get("status") == 200 and "<" in resp.get("text", "")[:200]
         report = {"url": sm_url, "status": resp.get("status"), "ok": ok,
@@ -1075,7 +1183,17 @@ def main():
         if ok:
             break
 
-    if not any(r["ok"] for r in sitemap_reports):
+    sitemap_found = any(r["ok"] for r in sitemap_reports)
+    # Only a definitive answer proves absence: 404/410, or a 200 that is not XML. A 403,
+    # 406, 429, 5xx or timeout says this client was refused, not that no sitemap exists.
+    sitemap_absent = bool(sitemap_reports) and all(
+        r["status"] in (404, 410) or (r["status"] == 200 and not r["ok"]) for r in sitemap_reports)
+    if not sitemap_found and not sitemap_absent and sitemap_reports:
+        notes.append("Sitemap not evaluated: " + ", ".join(f"{r['url']} -> {r['status']}"
+                                                         for r in sitemap_reports) +
+                     ". These responses refuse this client rather than prove the sitemap is "
+                     "missing, so REACH-005 is not scored.")
+    if not sitemap_found and sitemap_absent:
         finding("REACH-005", "No usable XML sitemap", "medium",
                 "Probed " + ", ".join(f"{r['url']} -> {r['status']}" for r in sitemap_reports) +
                 ". Without a sitemap, crawlers discover pages only by following links, so weakly-linked "
@@ -1087,7 +1205,7 @@ def main():
                            "Add `Sitemap: https://<host>/sitemap.xml` to robots.txt.",
                            "Submit it in Google Search Console and Bing Webmaster Tools."],
                  "effort": "low", "owner": "web/dev"})
-    elif not policy.sitemaps and robots_resp.get("status") == 200:
+    elif sitemap_found and not policy.sitemaps and robots_resp.get("status") == 200:
         found = next(r["url"] for r in sitemap_reports if r["ok"])
         finding("REACH-006", "Sitemap exists but is not advertised in robots.txt", "low",
                 f"A sitemap responded at {found} but robots.txt contains no `Sitemap:` directive, so "
@@ -1100,8 +1218,8 @@ def main():
     # ---- host canonicalisation -------------------------------------------
     apex = site_host[4:] if site_host.startswith("www.") else site_host
     alt_host = apex if site_host.startswith("www.") else "www." + apex
-    alt = fetch(f"{scheme}://{alt_host}/", timeout=10)
-    prim = fetch(start_url, timeout=15)
+    alt = {} if unreachable else fetch(f"{scheme}://{alt_host}/", timeout=10)
+    prim = early_home if unreachable else fetch(start_url, timeout=15)
     if alt.get("status") == 200 and prim.get("status") == 200:
         alt_final_host = parse.urlparse(alt.get("final_url", "")).netloc
         prim_final_host = parse.urlparse(prim.get("final_url", "")).netloc
@@ -1118,6 +1236,86 @@ def main():
                                "Make rel=canonical, sitemap URLs and internal links all use it."],
                      "effort": "low", "owner": "infrastructure"})
 
+    # ---- edge access probe ------------------------------------------------
+    # A site can allow OAI-SearchBot in robots.txt while its CDN refuses it -- the most
+    # common way a brand vanishes from AI answers without anyone having decided so.
+    # One GET per identity to the homepage, short timeout, no retries, and only for
+    # agents robots.txt allows (a robots block is already REACH-001). A browser-UA
+    # control request separates "refuses AI agents" from "refuses everyone"
+    # (paywall, geo-block, outage).
+    def page_signals(resp):
+        html = resp.get("text", "") or ""
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", html[:20000], re.I | re.S)
+        body = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html)
+        words = len(re.sub(r"<[^>]+>", " ", body).split())
+        title = title_match.group(1).strip() if title_match else ""
+        return title, words, detect_challenge(html, resp.get("headers", {}), title, words)
+
+    edge_probe = {"url": start_url, "control": None, "agents": [], "refused": []}
+    home_path = parse.urlparse(start_url).path or "/"
+    probe_agents = [] if unreachable else [a for a in EDGE_PROBE_AGENTS
+                                            if policy.verdict(a, home_path)[0]]
+    if probe_agents:
+        control = fetch(start_url, ua=BROWSER_CONTROL_UA, timeout=8, max_bytes=400_000)
+        _, control_words, control_challenge = page_signals(control)
+        control_ok = control.get("status") == 200 and not control_challenge
+        edge_probe["control"] = {"status": control.get("status"), "words": control_words,
+                                 "challenge": bool(control_challenge)}
+        if control_ok:
+            with ThreadPoolExecutor(max_workers=len(probe_agents)) as edge_pool:
+                responses = list(edge_pool.map(
+                    lambda a: fetch(start_url, ua=EDGE_PROBE_AGENTS[a], timeout=8,
+                                    max_bytes=400_000), probe_agents))
+            for agent, resp in zip(probe_agents, responses):
+                status = resp.get("status")
+                _, words, challenge = page_signals(resp)
+                if status in EDGE_REFUSAL_STATUS:
+                    outcome = f"HTTP {status}"
+                elif status == 200 and challenge:
+                    outcome = f"HTTP 200 carrying a {challenge['vendor']} challenge page"
+                elif status == 200 and words < 60 <= control_words // 5:
+                    outcome = f"HTTP 200 with only {words} words (browser received {control_words})"
+                else:
+                    outcome = None
+                edge_probe["agents"].append({"agent": agent, "status": status, "words": words,
+                                             "refused": bool(outcome)})
+                if outcome:
+                    edge_probe["refused"].append({"agent": agent, "outcome": outcome})
+                elif not status:
+                    notes.append(f"Edge probe: {agent} request got no response "
+                                 f"({resp.get('error') or 'timeout'}); not counted as a refusal.")
+        else:
+            notes.append(
+                f"Edge probe skipped: a browser User-Agent was also refused ({start_url} -> "
+                f"{control.get('status')}{', challenge page' if control_challenge else ''}), so any "
+                "refusal of AI agents would reflect a paywall, geo-block or blanket bot rule rather "
+                "than an AI-specific policy.")
+
+    if edge_probe["refused"]:
+        allowed_note = ", ".join(r["agent"] for r in edge_probe["refused"])
+        detail = "; ".join(f"{r['agent']} -> {r['outcome']}" for r in edge_probe["refused"])
+        finding("REACH-023", "The server refuses AI search agents that robots.txt allows", "high",
+                f"GET {start_url} with a browser User-Agent -> {edge_probe['control']['status']} "
+                f"({edge_probe['control']['words']} words). The same URL requested with the published "
+                f"User-Agent of each AI search agent: {detail}. robots.txt allows "
+                f"{len(edge_probe['refused'])}/{len(probe_agents)} of these agents on "
+                f"'{home_path}', so the refusal comes from the server, CDN or firewall, not from "
+                "policy. One request per identity, no retries. Caveat: some CDNs admit the genuine "
+                "crawlers by verifying their published IP ranges and refuse only impersonators; "
+                "this probe cannot originate from those ranges, so confirm before changing rules.",
+                {"summary": "Allow the AI search agents at the CDN/WAF layer so the robots.txt policy "
+                            "is what actually applies.",
+                 "steps": [f"Check the bot-management rules in your CDN or firewall for anything that "
+                           f"matches {allowed_note} (managed 'AI bot' or 'AI crawler' blocks, "
+                           "User-Agent deny lists, bot-score thresholds).",
+                           "Allow the verified search and user-fetch agents; keep a training-crawler "
+                           "block there if that is your policy.",
+                           "Confirm in server or CDN logs that requests from each agent's published "
+                           "IP ranges now receive 200.",
+                           "Re-run this audit to verify."],
+                 "effort": "low", "owner": "infrastructure"},
+                confidence="medium", refused_agents=[r["agent"] for r in edge_probe["refused"]])
+
     # ---- BFS crawl --------------------------------------------------------
     seed_urls = []
     for url in sitemap_urls:
@@ -1127,8 +1325,17 @@ def main():
         if len(seed_urls) > 400:
             break
 
-    queue = deque([(start_url, 0)])
+    queue = deque([] if unreachable else [(start_url, 0)])
     queued = {start_url}
+    queued_keys, fetched_keys = {url_key(start_url)}, set()
+    # About, contact, pricing and FAQ pages carry the identity facts most checks need.
+    # On a small page budget, breadth-first order often never reaches them.
+    priority_budget = 6
+    # URLs seen as internal link targets, kept apart from `queued` so sitemap top-ups
+    # never count as "linked". The frontier flags record whether link-following ran
+    # to completion, which REACH-017 needs before it may call a URL an orphan.
+    linked = {start_url}
+    link_frontier_exhausted = frontier_capped = False
     fetched, blocked_by_robots, doc_links = {}, [], []
     skipped_private = []
     polite_delay = max(args.delay_ms / 1000.0, min(policy.crawl_delay.get("*", 0), 2.0))
@@ -1152,6 +1359,10 @@ def main():
                     blocked_by_robots.append({"url": url, "rule": payload})
                     continue
                 resp = payload
+                final_key = url_key(resp.get("final_url") or url)
+                if resp.get("status") == 200 and final_key in fetched_keys:
+                    continue                # a redirect or slash variant of a page already read
+                fetched_keys.add(final_key)
                 ctype = (resp.get("content_type") or "").lower()
                 body_head = resp.get("text", "")[:200].lstrip()
                 if "html" not in ctype and resp.get("status") == 200 \
@@ -1161,12 +1372,21 @@ def main():
                     continue
                 parsed = parse_html(resp.get("text", ""), resp.get("final_url", url))
                 ptype, ptags = classify(url, parsed)
+                # Only the audited host's root is "the homepage". Other subdomains' roots
+                # (a support portal, a language edition) are ordinary pages of this site.
+                if ptype == "homepage" and \
+                        parse.urlparse(url).netloc.lower().removeprefix("www.") != \
+                        parse.urlparse(start_url).netloc.lower().removeprefix("www."):
+                    ptype = "generic"
                 fetched[url] = {"response": resp, "depth": depth, "parsed": parsed,
                                 "page_type": ptype, "page_tags": ptags, "non_html": False}
                 if depth < args.max_depth and resp.get("status") == 200:
                     for link in parsed["links"]:
                         target = link.get("abs")
-                        if not target or target in queued:
+                        if not target:
+                            continue
+                        linked.add(target)
+                        if target in queued or url_key(target) in queued_keys:
                             continue
                         if DOC_EXT.search(target):
                             doc_links.append({"from": url, "href": target,
@@ -1181,13 +1401,21 @@ def main():
                             skipped_private.append(target)
                             continue
                         queued.add(target)
-                        queue.append((target, depth + 1))
+                        queued_keys.add(url_key(target))
+                        if priority_budget and PRIORITY_PATH.search(parsed_target.path or ""):
+                            priority_budget -= 1
+                            queue.appendleft((target, depth + 1))
+                        else:
+                            queue.append((target, depth + 1))
                         if len(queued) > 600:
+                            frontier_capped = True
                             break
             if not queue and len(fetched) < args.max_pages:
+                link_frontier_exhausted = True
                 for url in seed_urls:                       # top up from the sitemap
-                    if url not in queued:
+                    if url not in queued and url_key(url) not in queued_keys:
                         queued.add(url)
+                        queued_keys.add(url_key(url))
                         queue.append((url, 1))
                     if len(queue) >= args.max_pages:
                         break
@@ -1320,17 +1548,48 @@ def main():
     home = fetched.get(start_url, {}).get("response", prim)
     # 4xx counts too: a homepage that 404s or 403s to a bot is exactly as invisible as
     # one that 500s, and treating only 5xx as failure let a fully-failed crawl through.
+    client_level = False
     if not home.get("status") or home.get("status", 0) >= 400:
+        # Separate "refuses bots" from "refuses this client". Bot management often keys on
+        # IP reputation, TLS fingerprint or geography, which refuses a browser User-Agent
+        # from the same machine too -- and then this audit cannot know whether verified AI
+        # crawlers are admitted. Asserting a critical block there would be a guess.
+        control = edge_probe.get("control")
+        if control is None and not unreachable:
+            control_resp = fetch(start_url, ua=BROWSER_CONTROL_UA, timeout=8, max_bytes=400_000)
+            _, control_words, control_challenge = page_signals(control_resp)
+            control = {"status": control_resp.get("status"), "words": control_words,
+                       "challenge": bool(control_challenge)}
+            edge_probe["control"] = control
+        client_level = not control or control.get("status") != 200 or control.get("challenge")
+        if client_level:
+            reach008_severity, reach008_confidence = "high", "low"
+            reach008_context = (
+                f" A browser User-Agent sent from the same client was refused too "
+                f"(status={(control or {}).get('status')}), so the refusal is keyed on the client "
+                "(IP reputation, TLS fingerprint or geography), not on the user-agent string. This "
+                "audit cannot tell whether verified AI crawlers are admitted; confirm in CDN or "
+                "server logs before acting.")
+        else:
+            reach008_severity, reach008_confidence = "critical", "high"
+            reach008_context = (
+                f" A browser User-Agent from the same client received 200 ({control['words']} "
+                "words), so the refusal is keyed on the user-agent: non-browser clients are turned "
+                "away.")
         finding("REACH-008", "Homepage does not return a successful response to a bot user-agent",
-                "critical",
+                reach008_severity,
                 f"GET {start_url} with UA '{UA_SELF}' -> status={home.get('status')} "
-                f"error={home.get('error') or home.get('tls_error')}. If the entry point fails for a "
-                "non-browser client, nothing on the site can be indexed or cited.",
+                f"error={home.get('error') or home.get('tls_error')}.{reach008_context} If the entry "
+                "point fails for non-browser clients, nothing on the site can be indexed or cited.",
                 {"summary": "Make the homepage return 200 to non-browser user-agents.",
                  "steps": ["Reproduce with `curl -A '<AI bot UA>' -I <url>` and compare to a browser UA.",
                            "Check WAF/CDN bot rules, rate limits and geo-blocks for false positives.",
                            "Allowlist the documented AI retrieval agents by UA and published IP ranges."],
-                 "effort": "medium", "owner": "infrastructure"})
+                 "effort": "medium", "owner": "infrastructure"},
+                confidence=reach008_confidence)
+        if client_level and not robots_resp.get("status"):
+            # robots.txt went unanswered for the same reason the homepage did.
+            findings[:] = [f for f in findings if f["check_id"] != "REACH-004"]
 
     # Not every non-2xx is a broken link, and blaming the site for all of them is a
     # false positive with three distinct causes:
@@ -1381,7 +1640,7 @@ def main():
                  "effort": "medium", "owner": "web/dev"},
                 affected_urls=[e["url"] for e in errors[:20]])
 
-    nosnippet, noindex = [], []
+    nosnippet, noindex, short_snippet, masked = [], [], [], []
     for url, rec in fetched.items():
         if rec["non_html"] or not rec["parsed"]:
             continue
@@ -1389,9 +1648,21 @@ def main():
         header_robots = (rec["response"].get("headers", {}).get("x-robots-tag") or "").lower()
         combined = (directives + " " + header_robots).strip()
         if "noindex" in combined:
-            noindex.append((url, combined))
-        if "nosnippet" in combined or "max-snippet:0" in combined.replace(" ", ""):
+            noindex.append((url, combined, "noindex" not in directives))
+        # Snippet controls on legal pages are a deliberate choice, not a visibility defect.
+        if rec.get("page_type") == "legal":
+            continue
+        limits = [int(v) for v in SNIPPET_LIMIT.findall(combined)]
+        if "nosnippet" in combined or 0 in limits:
             nosnippet.append((url, combined))
+            continue
+        positive = [v for v in limits if v > 0]           # -1 means unlimited
+        if positive and min(positive) <= 50:
+            short_snippet.append((url, min(positive)))
+        visible = rec["parsed"].get("visible_text_chars") or 0
+        hidden = rec["parsed"].get("data_nosnippet_chars") or 0
+        if visible >= 400 and hidden / visible > 0.30:
+            masked.append((url, round(100 * hidden / visible)))
 
     if nosnippet:
         finding("REACH-010", "Pages forbid snippets, which forbids quotation",
@@ -1408,10 +1679,41 @@ def main():
                  "effort": "low", "owner": "web/dev"},
                 affected_urls=[u for u, _ in nosnippet[:20]])
 
+    if short_snippet or masked:
+        parts = []
+        if short_snippet:
+            parts.append(f"{len(short_snippet)}/{len(html_pages)} crawled pages cap snippets at "
+                         f"max-snippet:{short_snippet[0][1]} or less (example: {short_snippet[0][0]}). "
+                         f"At {short_snippet[0][1]} characters an assistant can quote roughly "
+                         f"{max(1, short_snippet[0][1] // 6)} words, so no complete fact survives.")
+        if masked:
+            worst = max(masked, key=lambda m: m[1])
+            parts.append(f"{len(masked)}/{len(html_pages)} crawled pages wrap more than 30% of their "
+                         f"visible text in data-nosnippet (worst: {worst[1]}% on {worst[0]}), which "
+                         "removes that text from anything a search-grounded assistant may quote.")
+        affected = list(dict.fromkeys([u for u, _ in short_snippet] + [u for u, _ in masked]))
+        finding("REACH-024", "Snippet controls leave too little of the page quotable",
+                "high" if len(affected) >= max(1, len(html_pages) // 2) else "medium",
+                " ".join(parts),
+                {"summary": "Loosen snippet controls on pages you want assistants to quote.",
+                 "steps": ["Remove low max-snippet values, or set `max-snippet:-1` for no limit.",
+                           "Reserve `data-nosnippet` for the specific blocks that must not be quoted "
+                           "(legal boilerplate, gated excerpts), not whole content regions.",
+                           "Re-check the page source and the X-Robots-Tag header after the change."],
+                 "effort": "low", "owner": "web/dev"},
+                affected_urls=affected[:20])
+
     if noindex:
-        content_noindex = [(u, d) for u, d in noindex
-                           if fetched[u].get("page_type") not in ("legal", "listing", None)]
+        # Under 50 words, a noindexed URL is a fragment or widget endpoint (content that is
+        # stitched into other pages), not a page anyone meant to rank.
+        content_noindex = [(u, d, h) for u, d, h in noindex
+                           if fetched[u].get("page_type") not in ("legal", "listing", None)
+                           and (fetched[u]["parsed"] or {}).get("word_count", 0) >= 50]
         if content_noindex:
+            header_only = sum(1 for _, _, h in content_noindex if h)
+            header_note = (f" {header_only} of these set noindex only in the X-Robots-Tag HTTP "
+                           "header, which is invisible in the page source and in CMS SEO settings -- "
+                           "look in the server or CDN configuration." if header_only else "")
             share = len(content_noindex) / max(1, len(html_pages))
             # One deliberately-noindexed page is a question to confirm, not a site-wide
             # defect. Severity tracks how much of the site is actually withheld.
@@ -1421,14 +1723,15 @@ def main():
                     f"{len(content_noindex)}/{len(html_pages)} crawled content page(s) carry a "
                     f"noindex directive. "
                     f"Example: {content_noindex[0][0]} -> '{content_noindex[0][1][:120]}'. Noindexed "
-                    "pages are dropped from the search indexes assistants query for grounding.",
+                    "pages are dropped from the search indexes assistants query for grounding."
+                    f"{header_note}",
                     {"summary": "Remove noindex from pages that should be discoverable; keep it only on "
                                 "thin, duplicate or private pages.",
                      "steps": ["Audit each noindexed URL and confirm the directive is deliberate.",
                                "Remove it from anything with unique customer-facing value.",
                                "Prefer canonicalisation over noindex for duplicate variants."],
                      "effort": "low", "owner": "web/dev"},
-                    affected_urls=[u for u, _ in content_noindex[:20]])
+                    affected_urls=[u for u, _, _ in content_noindex[:20]])
 
     canon_issues = []
     for url, rec in fetched.items():
@@ -1440,6 +1743,11 @@ def main():
         elif registrable(parse.urlparse(canon).netloc) != site_root:
             canon_issues.append((url, f"cross-domain -> {canon}"))
     cross_domain = [c for c in canon_issues if c[1].startswith("cross-domain")]
+    # A canonical on the brand's own other domain (a regional edition, or a move to a new
+    # domain) is a deliberate consolidation, not a site crediting a stranger.
+    own_domain = [c for c in cross_domain
+                  if same_brand(site_root, parse.urlparse(c[1].split("-> ", 1)[1]).netloc)]
+    cross_domain = [c for c in cross_domain if c not in own_domain]
     if cross_domain:
         finding("REACH-013", "Pages canonicalise to a different domain", "high",
                 f"{len(cross_domain)} page(s) declare a rel=canonical on another registrable domain. "
@@ -1450,6 +1758,21 @@ def main():
                            "Use cross-domain canonicals only for genuine syndication you do not own."],
                  "effort": "low", "owner": "web/dev"},
                 affected_urls=[c[0] for c in cross_domain[:20]])
+    elif own_domain:
+        finding("REACH-013", "Pages canonicalise to a different domain", "low",
+                f"{len(own_domain)} page(s) declare a rel=canonical on another domain that appears to "
+                f"belong to the same brand. Example: {own_domain[0][0]} -> {own_domain[0][1]}. That is "
+                "correct when intended (a regional edition or a domain migration), but assistants "
+                "will cite the canonical domain rather than this one, and a canonical that depends "
+                "on the visitor's location can change with where the request comes from.",
+                {"summary": "Confirm the cross-domain canonical is the intended consolidation.",
+                 "steps": ["Check that the canonical domain is the one you want cited.",
+                           "If this host is being retired, 301-redirect it rather than relying on "
+                           "canonicals alone.",
+                           "If the canonical varies by visitor location, use hreflang alternates so "
+                           "each regional page stays self-canonical."],
+                 "effort": "low", "owner": "web/dev"},
+                confidence="medium", affected_urls=[c[0] for c in own_domain[:20]])
     elif html_pages and len(canon_issues) >= max(2, len(html_pages) * 0.5):
         finding("REACH-014", "Most pages have no rel=canonical", "medium",
                 f"{len(canon_issues)}/{len(html_pages)} crawled 200-pages declare no rel=canonical. "
@@ -1510,13 +1833,28 @@ def main():
                            "Flatten stacked rules (http->https->www->path) into one redirect."],
                  "effort": "low", "owner": "infrastructure"})
 
+    def same_page(u):
+        p = parse.urlparse(u)
+        return (p.netloc.lower(), (p.path or "/").rstrip("/") or "/", p.query)
+
     sampled_sitemap = sitemap_urls[:200]
+    linked_keys = {same_page(u) for u in linked}
     orphans = [u for u in sampled_sitemap
-               if u not in queued and registrable(parse.urlparse(u).netloc) == site_root]
-    if sampled_sitemap and html_pages and len(orphans) >= max(3, len(sampled_sitemap) * 0.3):
+               if same_page(u) not in linked_keys and registrable(parse.urlparse(u).netloc) == site_root]
+    orphan_threshold = max(3, len(sampled_sitemap) * 0.3)
+    # A URL is only an orphan if link-following ran to completion. When the page budget
+    # stops the crawl first, unseen sitemap URLs describe the sample, not the site.
+    frontier_complete = link_frontier_exhausted and not frontier_capped
+    if sampled_sitemap and html_pages and len(orphans) >= orphan_threshold and not frontier_complete:
+        notes.append(
+            f"REACH-017 (orphan sitemap URLs) not evaluated: the crawl reached its budget "
+            f"({len(fetched)} pages) before exhausting internal links, so the {len(orphans)} sitemap "
+            "URLs not yet seen as link targets reflect the audit's sample, not missing links.")
+    elif sampled_sitemap and html_pages and len(orphans) >= orphan_threshold:
         finding("REACH-017", "Sitemap URLs are not reachable through internal links", "medium",
                 f"{len(orphans)}/{len(sampled_sitemap)} sampled sitemap URLs were never encountered as "
-                f"a link target within {args.max_depth} clicks of the homepage. Example: {orphans[0]}. "
+                f"a link target within {args.max_depth} clicks of the homepage, after the crawl had "
+                f"followed every internal link in that range. Example: {orphans[0]}. "
                 "Pages with no internal links receive little crawl priority and no internal authority.",
                 {"summary": "Link every important page from a relevant hub or navigation surface.",
                  "steps": ["Add contextual internal links from related pages to each orphan.",
@@ -1557,18 +1895,9 @@ def main():
                 "formats, crawler traps). This is correct practice; no finding raised.")
 
     if not has_llms and html_pages:
-        finding("REACH-019", "No /llms.txt curated entry point for AI agents", "low",
-                f"GET {scheme}://{site_host}/llms.txt -> {llms_resp.get('status')}. Not a defect (the "
-                "convention is emerging and unenforced), but it is the cheapest way to hand agents a "
-                "curated map of the pages you most want quoted.",
-                {"summary": "Publish /llms.txt listing the canonical pages an agent should read first.",
-                 "steps": ["Create /llms.txt in Markdown: an H1 with the brand, a one-line description, "
-                           "then annotated links to the definitive pages (about, pricing, docs, FAQ, "
-                           "contact).",
-                           "Link each entry to a stable canonical URL with a short note on what it answers.",
-                           "Keep it in sync when the underlying pages change."],
-                 "effort": "low", "owner": "content"},
-                proactive=True)
+        notes.append(f"/llms.txt -> {llms_resp.get('status')}. Recorded, not scored: no major AI "
+                     "search crawler documents reading llms.txt, so its absence is not a visibility "
+                     "defect.")
 
     # ---- manifest ---------------------------------------------------------
     agent_verdicts = {}
@@ -1611,6 +1940,9 @@ def main():
         "sitemap_lastmods": sitemap_lastmods[:500],
         "sitemap_urls_sample": sitemap_urls[:300],
         "llms_txt": {"present": has_llms, "status": llms_resp.get("status")},
+        "edge_access_probe": edge_probe,
+        "crawl_frontier": {"link_frontier_exhausted": link_frontier_exhausted,
+                           "frontier_capped": frontier_capped},
         "document_links": doc_links[:100],
         "render": render_meta,
         "blocked_by_robots": blocked_by_robots[:50],
@@ -1625,7 +1957,7 @@ def main():
         "skill": "crawl-access-audit",
         "pillar": "access",
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "checks_run": [f"REACH-{n:03d}" for n in range(1, 23)],
+        "checks_run": [f"REACH-{n:03d}" for n in range(1, 25) if n != 19],
         "pages_analysed": len(page_index),
         "findings": findings,
         "notes": notes,

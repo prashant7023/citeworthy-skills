@@ -74,7 +74,8 @@ PROACTIVE_LIBRARY = [
                   "that mentions the topic among others.",
      "steps": ["List the 10-20 questions buyers actually ask before purchase.",
                "Give each its own URL, titled as the question, answered in the first 100 words.",
-               "Add FAQPage or Article markup and link them from the relevant product pages."]},
+               "Link each one from the relevant product pages; Article markup with a real "
+               "dateModified helps, FAQPage markup is optional."]},
     {"id": "P-COMPARISON", "title": "Publish honest comparison and alternatives pages",
      "pillar": "trust", "effort": "medium", "owner": "marketing",
      "rationale": "'X vs Y' and 'alternatives to X' are among the highest-intent questions asked of "
@@ -173,6 +174,35 @@ def main():
             item.setdefault("pillar", bundle.get("pillar", "extract"))
             item["source_skill"] = bundle.get("skill")
             findings.append(item)
+
+    # ---- composition rule 0: what the evidence can support -----------------
+    # Engagement defects degrade a visit; none makes a brand unfindable, which is what
+    # `critical` means in the severity model. Prevalence escalation must not cross that.
+    for item in findings:
+        if item.get("pillar") in ("engage", "engagement") and item["severity"] == "critical":
+            item["severity"] = "high"
+            if item["suggested_action"].get("priority") == "critical":
+                item["suggested_action"]["priority"] = "high"
+
+    # When the crawler was served challenge or duplicate pages, every content-derived
+    # finding describes the interstitial, not the site ("no sentence says what the brand
+    # is" about a bot-check page). Those are withheld; findings about robots.txt, status
+    # codes and the refusal itself stand.
+    SHELL_SAFE = {"REACH-001", "REACH-002", "REACH-003", "REACH-004", "REACH-005", "REACH-006",
+                  "REACH-007", "REACH-008", "REACH-011", "REACH-018", "REACH-020", "REACH-021",
+                  "REACH-022", "REACH-023"}
+    shell_ids = sorted({f["check_id"] for f in findings} & {"REACH-021", "REACH-022"})
+    shell_note = None
+    if shell_ids:
+        withheld = [f for f in findings if f["check_id"] not in SHELL_SAFE]
+        findings = [f for f in findings if f["check_id"] in SHELL_SAFE]
+        if withheld:
+            shell_note = (
+                f"CONTENT FINDINGS WITHHELD. {' and '.join(shell_ids)} show the crawler was served "
+                f"challenge or duplicate pages instead of the site's content, so {len(withheld)} "
+                "content, markup, freshness and engagement finding(s) computed from those pages "
+                "were withheld rather than reported as defects of the site. Re-run from an "
+                "environment the site does not challenge to evaluate them.")
 
     # ---- composition rule 1: gating ---------------------------------------
     gate_ids = {"REACH-001", "REACH-008", "REACH-011"}
@@ -410,7 +440,8 @@ def main():
                         "(high 1.0, medium 0.75, low 0.5). The overall score is the unweighted mean "
                         "of the five pillar scores."),
         },
-        "limitations": [note for note in [inconclusive_note, gate_note, confound_note] if note]
+        "limitations": [note for note in [inconclusive_note, shell_note, gate_note, confound_note]
+                        if note]
                        + ([] if not renderer_missing else
                           ["No JavaScript renderer was available; render-parity findings are "
                            "heuristic. Install Playwright for measured results."])

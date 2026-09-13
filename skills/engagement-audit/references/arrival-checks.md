@@ -22,9 +22,9 @@ arrived, any navigation that only makes sense in sequence — all dead ends.
 
 | Check | Fires when | Severity | Why it costs engagement |
 |---|---|---|---|
-| `STAY-001` | ≥50% of inner pages fail 2 of 3 orientation signals (H1 naming the subject, brand named in first screen, breadcrumb) | high, escalates to critical | The arriving stranger cannot tell whose site this is or where they are. The single most AI-specific check here. |
+| `STAY-001` | ≥50% of inner pages fail 2 of 3 orientation signals (H1 naming the subject, brand named in the title, `og:site_name` or first screen, breadcrumb) | high (engagement findings are never critical) | The arriving stranger cannot tell whose site this is or where they are. The single most AI-specific check here. |
 | `STAY-002` | Entry screen <20 non-nav words, or no action-verb CTA among any link | high | No visible next action; the default decision is to leave. |
-| `STAY-003` | >500 KB HTML or >8 render-blocking scripts | medium | Every blocking script delays first paint; abandonment rises steeply per second. |
+| `STAY-003` | >1 MB HTML or >8 render-blocking scripts in `<head>` (classic scripts only; `async`, `defer` and `module` do not block) | medium | Every blocking script delays first paint; abandonment rises steeply per second. |
 | `STAY-004` | No `width=device-width`, or `user-scalable=no`/`maximum-scale=1` | high | Desktop layout scaled to illegibility, and pinch-zoom disabled so it cannot be fixed. Most referrals are mobile. |
 | `STAY-005` | ≥2 interruption layers (consent platform, chat widget, `<dialog>`, overlay heading) | medium | Each costs a dismissal before the visitor reaches the fact they came for. |
 | `STAY-006` | Substantive page has <5 internal links | medium | The session ends at one page; the crawler also finds no path onward. |

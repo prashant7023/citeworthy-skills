@@ -175,19 +175,25 @@ def phase_onsite(args, manifest, docs, find):
     # real-world entities actually surface for the name (probe P3) and reports what was
     # observed. Where those probes did not run, this score says so rather than guessing.
     score = max(0, min(100, score))
-    if not os.path.exists(os.path.join(os.path.abspath(args.workspace),
-                                       "probe_results.json")):
+    probes_ran = os.path.exists(os.path.join(os.path.abspath(args.workspace),
+                                             "probe_results.json"))
+    if not probes_ran:
         breakdown.append("name-collision risk not assessed (off-site probes not run)")
     detail = f"EntityScore {score}/100 [{', '.join(breakdown) or 'no signals'}]"
 
     if score < 40:
-        find.add("ENTITY-001", "The brand is weakly resolvable as a real-world entity", "high",
+        # The score reads the site's own links only. A widely covered brand is resolved
+        # from off-site evidence regardless, so without the off-site probes the finding is
+        # capped at medium rather than asserting the brand itself is hard to identify.
+        find.add("ENTITY-001", "The site links to few authoritative profiles of itself",
+                 "high" if probes_ran else "medium",
                  f"{detail}. Anchors found across {total} crawled pages: "
                  f"{', '.join(sorted(anchors)) or 'none'}. An entity is resolved by "
                  "triangulation -- a system matches the site against known profiles to decide "
-                 "which real-world organisation it is. Below 40 the evidence is too thin for that "
-                 "to succeed, so the brand exists mainly as a domain name and is easily confused "
-                 "with similarly-named entities.",
+                 "which real-world organisation it is. Below 40 the site itself gives little to "
+                 "match against. This measures on-site anchors only; how the wider web resolves "
+                 "the brand is assessed by the off-site probes (ENTITY-006 to ENTITY-010)"
+                 + ("." if probes_ran else ", which were not run for this audit."),
                  "Claim and link the profiles that act as identity anchors, and reference them in sameAs.",
                  ["Claim the profiles that matter for your category: LinkedIn and Crunchbase for "
                   "B2B, a Google Business Profile for anything with a physical location, G2 or "
@@ -490,7 +496,7 @@ def phase_merge(args, manifest, find, brand_name):
         third_party = [d for d in domains(p2) if root and root not in d]
         if (isinstance(independent, int) and independent == 0) or \
                 (independent is None and not third_party):
-            find.add("ENTITY-009", "No independent sources discuss the brand", "high",
+            find.add("ENTITY-009", "No independent sources about the brand surfaced in search", "high",
                      f"Probe P2 (\"{p2.get('query')}\") surfaced 0 independent third-party sources "
                      f"out of {len(domains(p2))} domain(s) returned "
                      f"({', '.join(domains(p2)[:6]) or 'none'}). Machines treat a "

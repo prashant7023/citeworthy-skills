@@ -4,8 +4,9 @@ description: >-
   Check whether AI crawlers and search agents can reach a site at all, and build
   the shared evidence bundle the rest of the audit reads. Detects robots.txt
   blocks on answer-time retrieval agents (OAI-SearchBot, ChatGPT-User, Claude-User,
-  PerplexityBot) as distinct from training-corpus opt-outs, plus nosnippet and
-  noindex directives, error status codes, missing or unadvertised sitemaps,
+  PerplexityBot) as distinct from training-corpus opt-outs, CDN/firewall refusals
+  of agents robots.txt allows, nosnippet, snippet-length and noindex directives,
+  error status codes, missing or unadvertised sitemaps,
   canonical and duplicate-host problems, orphan pages, slow responses, redirect
   chains and missing HTTPS. Use as the first stage of an AI-readiness audit, or
   alone to answer "can bots even reach this site?".
@@ -63,12 +64,21 @@ one retrieval agent is invisible to that assistant no matter what else it does.
    → `REACH-001` (retrieval blocked, critical), `REACH-002` (training blocked, informational),
    `REACH-003` (syntax errors), `REACH-004` (unreachable/5xx — many crawlers read that as
    "disallow everything").
-4. **llms.txt.** Probe `/llms.txt` → `REACH-019` (proactive, low).
+4. **llms.txt.** Probe `/llms.txt` and record the status in the manifest. It is not scored:
+   no major AI search crawler documents reading it.
 5. **Sitemaps.** Try every `Sitemap:` directive, then `/sitemap.xml` and
    `/sitemap_index.xml`; follow one level of sitemap index. → `REACH-005` (none usable),
    `REACH-006` (exists but not advertised).
 6. **Host canonicalisation.** Fetch both apex and `www`; if both return 200 without
    redirecting to one another → `REACH-007`.
+6b. **Edge access.** robots.txt is policy; the CDN enforces. Request the homepage once with
+   a browser User-Agent (the control) and once with each AI search agent's published
+   User-Agent (OAI-SearchBot, Claude-SearchBot, PerplexityBot), probing only agents
+   robots.txt allows. A control that succeeds while an agent gets 401/403/406/503, a
+   challenge page or a near-empty body → `REACH-023` (high, medium confidence). If the
+   control is also refused, skip the check: that is a paywall, geo-block or outage, not
+   an AI policy. On Path B, use the agent's web-fetch tool for the control and state that
+   User-Agent could not be varied.
 7. **Crawl.** Breadth-first from the entry page, same registrable domain only, obeying
    robots for our own user-agent, with a polite delay (at least the site's `Crawl-delay`,
    capped at 2s), capped concurrency, and hard page/depth/time budgets. **Skip
@@ -87,9 +97,12 @@ one retrieval agent is invisible to that assistant no matter what else it does.
    web-fetch tool, which is why that field being null is recorded rather than guessed.
 10. **Access findings over the sample** — `REACH-008` homepage fails for a bot UA,
     `REACH-009` broken internal links, `REACH-010` nosnippet/max-snippet:0 (forbids
-    quotation — indexed but never citable), `REACH-012` noindex on content pages,
+    quotation — indexed but never citable), `REACH-024` snippet caps of ≤50 characters or
+    `data-nosnippet` over 30% of the text, `REACH-012` noindex on content pages,
     `REACH-013`/`REACH-014` canonical problems, `REACH-015` slow responses, `REACH-016` redirect
-    chains, `REACH-017` orphan sitemap URLs, `REACH-018` disallowed content paths.
+    chains, `REACH-017` orphan sitemap URLs (only when link-following finished; a crawl cut
+    short by the page budget cannot call anything an orphan), `REACH-018` disallowed content
+    paths.
 11. **Write the bundle**: `manifest.json`, `pages/<id>.json`, `pages/<id>.raw.html`,
     `pages/<id>.rendered.html`, `findings/crawl-access-audit.json`.
 
@@ -126,7 +139,8 @@ marketplace. `references/evidence-bundle-format.md` documents every field.
 ## Guardrails
 
 Read-only GET requests only. robots.txt obeyed. No authenticated areas, no forms, no
-POST. Bounded by pages, depth and wall-clock time. `--ignore-robots` exists solely for
+POST. The edge probe sends at most four homepage requests under other User-Agents, only
+for agents robots.txt allows, with no retries. Bounded by pages, depth and wall-clock time. `--ignore-robots` exists solely for
 auditing a site you own and must never be used on a third party's site.
 
 ## References

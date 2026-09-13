@@ -19,6 +19,7 @@ Pure analyzer: reads the evidence bundle, performs no network I/O.
 import argparse
 import json
 import re
+from urllib import parse
 
 from evidence import load_bundle, html_pages, best_view, escalate, Findings
 
@@ -35,7 +36,8 @@ EXPECTED = {
     "article": (["Article", "BlogPosting", "NewsArticle", "TechArticle", "Report"],
                 "supplies author, publish date and headline, which drive freshness and trust"),
     "faq": (["FAQPage", "QAPage"],
-            "maps questions to answers, the single most directly quotable structure there is"),
+            "pairs each question with its answer explicitly (rich results for FAQ markup are now "
+            "limited to a few site categories, so the value is machine clarity, not a SERP feature)"),
     "contact": (["Organization", "LocalBusiness", "ContactPage", "Place", "PostalAddress"],
                 "supplies address, phone and hours for 'how do I reach them' answers"),
     "about": (["Organization", "AboutPage", "Corporation", "LocalBusiness"],
@@ -163,11 +165,12 @@ def main():
 
     # -- MARK-001: nothing at all ---------------------------------------------
     if not pages_with_any:
-        find.add("MARK-001", "No structured data anywhere on the site", "high",
-                 f"0/{total} crawled pages contain JSON-LD, microdata or RDFa. Structured data is the "
-                 "only channel where a page states a fact unambiguously (who the company is, what a "
-                 "product costs, when an article was written). Without it, every fact has to be "
-                 "inferred from prose, which is slower, lossier and more often wrong.",
+        find.add("MARK-001", "No structured data on any crawled page", "high",
+                 f"0/{total} crawled pages contain JSON-LD, microdata or RDFa. Structured data states "
+                 "facts without interpretation (who the company is, what a product costs, when an "
+                 "article was written) and is how search systems tell this brand apart from a "
+                 "namesake. Without it, every fact has to be inferred from prose, and the site "
+                 "forgoes price, rating and breadcrumb search features.",
                  "Add schema.org JSON-LD, starting with Organization on the homepage and the "
                  "page-type-appropriate entity everywhere else.",
                  ["Add an Organization (or LocalBusiness) JSON-LD block to the homepage with name, url, "
@@ -291,7 +294,9 @@ def main():
         subject = label.get(ptype, f"{ptype.capitalize()} pages carry")
         find.add(f"MARK-006-{ptype}",
                  f"{subject} no {gap['expected'][0]} markup",
-                 escalate("medium", prevalence, homepage_hit),
+                 # Offer markup on a pricing page is a nice-to-have: search engines show no
+                 # price feature for service pricing, so its absence is never above low.
+                 "low" if ptype == "pricing" else escalate("medium", prevalence, homepage_hit),
                  f"{len(gap['urls'])} page(s) classified as '{ptype}' declare none of the expected "
                  f"types ({', '.join(gap['expected'][:4])}). Examples: "
                  f"{', '.join(gap['urls'][:3])}. This markup {gap['why']}, so its absence removes the "
@@ -445,13 +450,18 @@ def main():
     for url, data in per_page.items():
         view = data["view"]
         title = (view.get("title") or "").strip()
-        titles.setdefault(title, []).append(url)
+        # URLs that declare one canonical, or differ only by query string, are one document
+        # at two addresses; sharing a title is correct for them.
+        target = parse.urlparse(view.get("canonical") or data["page"].get("final_url") or url)
+        document = (target.netloc.lower(), (target.path or "/").rstrip("/") or "/")
+        titles.setdefault(title, {}).setdefault(document, url)
         desc = (view.get("meta", {}).get("description") or "").strip()
         if not desc:
             no_desc.append(url)
         elif len(desc) > 320:
             long_desc.append(url)
-    duplicates = {t: u for t, u in titles.items() if t and len(u) > 1}
+    duplicates = {t: list(by_document.values()) for t, by_document in titles.items()
+                  if t and len(by_document) > 1}
     if duplicates:
         title, urls = max(duplicates.items(), key=lambda kv: len(kv[1]))
         find.add("MARK-010", "Multiple pages share the same <title>",

@@ -19,6 +19,7 @@ Pure analyzer: reads the evidence bundle, performs no network I/O.
 """
 import argparse
 import re
+import unicodedata
 
 from evidence import load_bundle, html_pages, best_view, body_text, brand_tokens, escalate, Findings
 
@@ -44,6 +45,13 @@ TRUST_SIGNALS = {
     "policy": re.compile(r"\b(privacy|terms|security|refund|returns?|guarantee)\b", re.I),
 }
 BLOCKING_SCRIPT_LIMIT = 8
+HTML_WEIGHT_LIMIT_KB = 1024
+
+
+def fold(text):
+    """Lowercase and strip accents, so 'Wikipédia' still names the brand 'wikipedia'."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text or "")
+                   if not unicodedata.combining(c)).lower()
 
 
 def viewport_ok(value):
@@ -92,8 +100,13 @@ def main():
         text = body_text(view)
         h1 = next((h["text"].strip() for h in view.get("headings", [])
                    if h["level"] == 1 and h["text"].strip()), "")
-        opening = (view.get("first_screen_text") or text)[:900].lower()
-        names_brand = any(tok in opening for tok in brand)
+        opening = (view.get("first_screen_text") or text)[:900]
+        # The <title> and og:site_name are what a visitor sees in the tab and in the
+        # citation card they clicked; a logo in the header rarely survives as text.
+        identity = fold(" ".join([opening, view.get("title") or "",
+                                  (view.get("og") or {}).get("og:site_name") or ""]))
+        compact = re.sub(r"[\s\-]", "", identity)          # "ICICI Bank" vs "icicibank"
+        names_brand = any(tok in identity or tok in compact for tok in brand)
         has_breadcrumb = "BreadcrumbList" in " ".join(
             str(view.get("jsonld", []))) or bool(re.search(
                 r'(?:breadcrumb|aria-label=["\'][^"\']*breadcrumb)', str(view.get("links", []))[:4000], re.I))
@@ -101,7 +114,7 @@ def main():
         if not h1:
             misses.append("no H1")
         if not names_brand:
-            misses.append("brand not named in the opening screen")
+            misses.append("brand not named in the title or opening screen")
         if not has_breadcrumb:
             misses.append("no breadcrumb trail")
         if len(misses) >= 2:
@@ -109,9 +122,9 @@ def main():
     if inner and len(disoriented) >= max(2, len(inner) * 0.5):
         sample = "; ".join(f"{d['url']} ({', '.join(d['misses'])})" for d in disoriented[:3])
         find.add("STAY-001", "Inner pages do not orient a visitor who lands on them cold",
-                 escalate("high", len(disoriented) / max(1, len(inner))),
+                 "high",
                  f"{len(disoriented)}/{len(inner)} inner pages fail two or more orientation checks "
-                 f"(an H1 naming the page's subject, the brand name in the first screen, a breadcrumb "
+                 f"(an H1 naming the page's subject, the brand named in the title or first screen, a breadcrumb "
                  f"trail). {sample}. Assistants cite the page that held the fact, not the homepage, so "
                  "every inner page is an entry page for a stranger with no session history. A visitor "
                  "who cannot tell whose site this is and where they are within it leaves immediately.",
@@ -160,9 +173,13 @@ def main():
     heavy = []
     for page in docs:
         raw = page["raw"]
-        blocking = [s for s in raw.get("scripts", []) if not s.get("async") and not s.get("defer")]
+        # Only a classic script in <head> blocks first paint: async, defer and module
+        # scripts do not, and a script at the end of <body> runs after content is painted.
+        blocking = [s for s in raw.get("scripts", [])
+                    if not s.get("async") and not s.get("defer") and not s.get("module")
+                    and s.get("in_head", True)]
         html_kb = round(page.get("bytes", 0) / 1024)
-        if html_kb > 500 or len(blocking) > BLOCKING_SCRIPT_LIMIT:
+        if html_kb > HTML_WEIGHT_LIMIT_KB or len(blocking) > BLOCKING_SCRIPT_LIMIT:
             heavy.append({"url": page["url"], "kb": html_kb, "blocking": len(blocking),
                           "scripts": raw.get("counts", {}).get("script", 0),
                           "ms": page.get("fetch_ms")})
@@ -170,8 +187,8 @@ def main():
         worst = max(heavy, key=lambda h: h["blocking"] * 100 + h["kb"])
         find.add("STAY-003", "Pages ship enough render-blocking weight to delay first paint",
                  escalate("medium", len(heavy) / total),
-                 f"{len(heavy)}/{total} pages exceed 500 KB of HTML or carry more than "
-                 f"{BLOCKING_SCRIPT_LIMIT} render-blocking scripts. Worst: {worst['url']} "
+                 f"{len(heavy)}/{total} pages exceed {HTML_WEIGHT_LIMIT_KB} KB of HTML or carry more "
+                 f"than {BLOCKING_SCRIPT_LIMIT} render-blocking scripts in <head>. Worst: {worst['url']} "
                  f"({worst['kb']} KB HTML, {worst['blocking']} blocking script(s), "
                  f"{worst['scripts']} script tags total, {worst['ms']} ms server response). Each "
                  "blocking script delays the first meaningful paint, and abandonment rises steeply "

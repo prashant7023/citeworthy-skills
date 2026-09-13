@@ -46,7 +46,7 @@ prioritization rule at once — it is not a taxonomy applied after the fact.
 | Skill | Pillar | What it does |
 |---|---|---|
 | **`audit-orchestrator`** | — | **Entrypoint.** Runs the others in causal order, applies the four cross-skill rules below, emits and validates the single report. |
-| `crawl-access-audit` | Access | Checks whether crawlers can reach the site: robots.txt per-agent verdicts, status codes, sitemaps, canonicals, snippet directives. Also performs the one crawl and writes the shared evidence bundle. |
+| `crawl-access-audit` | Access | Checks whether crawlers can reach the site: robots.txt per-agent verdicts, whether the CDN actually honours them, status codes, sitemaps, canonicals, snippet directives. Also performs the one crawl and writes the shared evidence bundle. |
 | `render-extraction-audit` | Parse | Compares raw server HTML against a rendered view to find content that only exists after JavaScript, plus facts locked in images, PDFs, video and iframes. |
 | `structured-data-audit` | Extract | Checks schema.org markup for presence, validity, and — the part most audits skip — agreement with what the page visibly says. |
 | `answer-extractability-audit` | Extract | Checks whether the prose contains sentences a retriever can lift verbatim: self-contained, declarative, bounded, specific. |
@@ -54,7 +54,7 @@ prioritization rule at once — it is not a taxonomy applied after the fact.
 | `freshness-audit` | Trust | Separates content that is undatable from content that is stale from freshness signals that are dishonest. |
 | `engagement-audit` | Engage | Judges the site as an AI-referred visitor meets it: cold arrival on an inner page, specific intent, no session history. |
 
-**93 checks** across the seven analyzer skills. Full table with thresholds and guards:
+**94 checks** across the seven analyzer skills. Full table with thresholds and guards:
 `skills/audit-orchestrator/references/finding-catalog.md`.
 
 ## How the entrypoint composes them
@@ -109,9 +109,11 @@ counts-by-severity `summary`, and `findings[]` each with `id`, `title`, `severit
 
 Full contract: `skills/audit-orchestrator/references/report-schema.json`.
 
-Two commitments the schema enforces. **Evidence or it doesn't ship** —
+Three commitments the validator enforces. **Evidence or it doesn't ship** —
 `verify_report.py` fails closed unless every finding cites a measured quantity and a
-traceable check id. **Unevaluated is never "passing"** — each skill records the checks it
+traceable check id. **No advice that backfires** — a report is rejected if any fix
+recommends keyword stuffing, hidden text, cloaking, instructions aimed at AI models,
+stripping dates or caveats, or invented reviews. **Unevaluated is never "passing"** — each skill records the checks it
 ran whether or not they fired, so the report distinguishes *checked and clean* from *not
 checked*, and anything unverified lands in `limitations`.
 
@@ -137,7 +139,9 @@ Recommend-only — it audits and reports, never alters a site. GET requests only
 no authentication. Authenticated and transactional URLs (`/login`, `/checkout`,
 `/account`, `app.`, `dashboard.`) are filtered before fetching. robots.txt is respected,
 the site's own `Crawl-delay` is honoured, and the crawl is capped by pages, depth,
-concurrency and wall-clock time.
+concurrency and wall-clock time. To check whether the CDN honours robots.txt, the homepage
+is requested once with a browser User-Agent and once with each allowed AI search agent's
+published User-Agent. No retries.
 
 ## Requirements
 

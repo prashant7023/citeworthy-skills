@@ -56,9 +56,11 @@ the fixes (rewrite the copy vs. add markup).
    required, because a slogan above a clear definition is fine.
 4. **Fact coverage** (`QUOTE-003`) — checks for pricing, contact, location, founding and
    offering as plain text. Each class is **gated by site type**, so a charity is never
-   asked for pricing and a SaaS is never asked for opening hours.
+   asked for pricing and a SaaS is never asked for opening hours. Contact details count
+   only as an email or phone number, and contact and founding facts are expected only
+   when an About or Contact page was actually crawled.
 5. **Chunkability** (`QUOTE-004`, `QUOTE-005`) — 600+ word pages with fewer than one
-   subheading per ~500 words; paragraphs over 160 words. Without headings to cut on, a
+   subheading per ~500 words; `<p>` elements over 160 words. Without headings to cut on, a
    retriever splits mid-argument and the passage is discarded as low quality.
 6. **Question shape** (`QUOTE-006`) — no question-phrased headings and no FAQ anywhere.
    Content already shaped as question-then-direct-answer matches a query closely and can
@@ -69,8 +71,9 @@ the fixes (rewrite the copy vs. add markup).
    detached from the page, so it is dropped or credited to someone else.
 8. **Signal-to-boilerplate** (`QUOTE-008`) — under 35% of a page's text inside `<main>`.
    Every chunk is then mostly menu labels identical across the whole site.
-9. **Consistency and clarity** (`QUOTE-009` inconsistent naming, `QUOTE-010` unexpanded
-   acronyms, `QUOTE-011` numeric claims with no baseline, `QUOTE-012` generic anchor text).
+9. **Consistency and clarity** (`QUOTE-009` one term spelled more than one way,
+   `QUOTE-010` unexpanded acronyms, `QUOTE-011` comparative percentage or multiplier claims
+   with no baseline, `QUOTE-012` generic anchor text).
 10. **Stated boundaries** (`QUOTE-013`) — product, pricing and docs pages that make three or
     more capability claims ("supports", "integrates with", "works with") while carrying no
     specification table and no explicit limits. Asked whether the product does something it

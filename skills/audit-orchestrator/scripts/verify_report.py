@@ -34,6 +34,40 @@ QUANTITY = re.compile(
     r"(?:\(s\))?\b"
     r"|\b\d+\s+(?:distinct|malformed|crawled|independent|identity|recognised)\b")
 
+# Remediation that games or deceives machines backfires: search engines penalise it and
+# assistants discount it. Any recommendation matching these -- most likely from an
+# agent-written judgment finding -- blocks the report. A sentence that says to avoid
+# the tactic ("never hide text") is not a recommendation of it.
+COUNTERPRODUCTIVE = {
+    "keyword stuffing": re.compile(r"\bkeyword density\b|\brepeat (?:the |your )?(?:target |main )?"
+                                   r"keywords?\b|\bstuff(?:ing)? (?:in )?keywords?\b", re.I),
+    "hidden text or cloaking": re.compile(r"\bhidden text\b|\bhide (?:the |some )?text\b|"
+                                          r"\bcloak(?:ing)?\b|\bserve (?:different|separate) content "
+                                          r"to (?:bots|crawlers|ai)\b", re.I),
+    "instructions aimed at AI models": re.compile(r"\binstruct (?:the )?(?:ai|llms?|models?|assistants?)"
+                                                  r"\b|\bignore (?:all |any )?previous instructions\b|"
+                                                  r"\bprompt[- ]inject", re.I),
+    "removing dates or caveats": re.compile(r"\b(?:remove|strip|delete|hide) (?:all |the |any )?"
+                                            r"(?:publication |published |visible |old )?"
+                                            r"(?:dates?|disclaimers?|caveats?)\b", re.I),
+    "fabricated social proof": re.compile(r"\b(?:fake|fabricated|invented) (?:reviews?|testimonials?|"
+                                          r"ratings?)\b", re.I),
+}
+NEGATION = re.compile(r"\b(?:never|not|don't|do not|avoid|without|instead of|rather than|no)\b", re.I)
+
+
+def counterproductive_advice(action):
+    """Return (tactic, sentence) pairs where the action recommends a manipulative tactic."""
+    texts = [str(action.get("summary", ""))] + [str(s) for s in action.get("steps") or []]
+    hits = []
+    for text in texts:
+        for sentence in re.split(r"(?<=[.;!?])\s+", text):
+            for tactic, pattern in COUNTERPRODUCTIVE.items():
+                match = pattern.search(sentence)
+                if match and not NEGATION.search(sentence[:match.start()]):
+                    hits.append((tactic, sentence.strip()[:120]))
+    return hits
+
 
 def fail(errors, message):
     errors.append(message)
@@ -121,6 +155,9 @@ def validate(report):
             fail(errors, f"{where}.suggested_action.summary is too vague to act on")
         if not action.get("steps"):
             warnings.append(f"{where} ({finding.get('id')}) has no concrete remediation steps")
+        for tactic, sentence in counterproductive_advice(action):
+            fail(errors, f"{where} ({finding.get('id')}) recommends {tactic}, which search engines "
+                         f"penalise and assistants discount: {sentence!r}")
 
         # Marketplace-specific invariants: traceability and honest confidence.
         if "check_id" not in finding:

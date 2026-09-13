@@ -23,7 +23,7 @@ otherwise.
 
 | Check | Threshold | Severity |
 |---|---|---|
-| `TIME-001` undated time-sensitive page | No date in any of the three sources | medium, escalating |
+| `TIME-001` undated time-sensitive page | No date in any of the three sources | medium, escalating only when 4+ pages qualify |
 | `TIME-002` newest content old | 12+ months | medium; 24+ months high |
 | `TIME-003` bulk staleness | 50%+ of dated pages 24+ months old | medium |
 | `TIME-004` stale copyright | Footer year below current year minus 1 | low, escalating |
@@ -55,9 +55,15 @@ often, which makes the problem worse.
 
 ## Which pages count as time-sensitive
 
-A page qualifies if it is classified `article`, `docs`, `pricing` or `product`, **or** its
-text contains explicit currency language (`latest`, `current`, `now available`, `as of`,
-`up-to-date`, `this year`).
+A page qualifies if it is classified `article` or `docs`, **or** it is not an evergreen
+type (homepage, product, pricing, listing, legal, contact, careers, about) and its text
+stakes a fact on a point in time: `as of`, `this year`, `last updated`, `up-to-date`,
+`currently priced/available/supports`, `latest version/release/rates/prices`, or `rates
+effective from`.
+
+Bare `latest`, `current`, `today` and `now available` do not qualify. They are marketing
+vocabulary on nearly every product page, and treating them as currency claims demanded
+dates from apple.com/mac and github.com/about in real-site testing.
 
 Evergreen pages making no currency claim are not required to carry a date — though the
 remediation suggests a `Reviewed <month year>` stamp anyway, since it makes currency

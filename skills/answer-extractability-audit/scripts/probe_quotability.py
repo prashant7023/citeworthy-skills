@@ -23,6 +23,7 @@ Pure analyzer: reads the evidence bundle, performs no network I/O.
 import argparse
 import re
 from collections import Counter
+from urllib import parse
 
 from evidence import load_bundle, html_pages, best_view, body_text, brand_tokens, escalate, Findings
 
@@ -39,11 +40,20 @@ VAGUE_HERO = re.compile(
     r"where .{0,30} meets)", re.I)
 FIRST_PERSON = re.compile(r"\b(we|our|us|ourselves|my|i)\b", re.I)
 ACRONYM = re.compile(r"\b([A-Z]{2,6})s?\b")
-NUMERIC_CLAIM = re.compile(
-    r"\b(\d{1,3}(?:[.,]\d+)?)\s*(%|percent|x\b|times\b)|"
-    r"\b(?:up to|over|more than|less than|save|reduce|increase|faster|cheaper)\s+\d", re.I)
+# A performance claim is a relative figure (a percentage or multiplier) attached to a
+# comparison. "Trusted by 98% of the Fortune 500", "over 11 days" and "up to 3% cash back"
+# are counts, durations and offers -- quotable as they stand -- not claims needing a baseline.
+NUMERIC_CLAIM = re.compile(r"\b\d{1,4}(?:[.,]\d+)?\s*(?:%|percent\b|x\b|times\b)", re.I)
+COMPARATIVE = re.compile(
+    r"\b(?:faster|slower|quicker|more|less|fewer|higher|lower|better|cheaper|"
+    r"increase[ds]?|reduc(?:e|es|ed|tion)|cuts?|boost(?:s|ed)?|improv(?:e|es|ed|ement)|"
+    r"sav(?:e|es|ed|ings)|lift|uplift|growth|grows?|drops?|decrease[ds]?)\b", re.I)
 UNIT_CONTEXT = re.compile(
-    r"\b(?:than|versus|vs\.?|compared (?:to|with)|baseline|before|previously|per\s+\w+)\b", re.I)
+    r"\b(?:than|versus|vs\.?|compared (?:to|with)|baseline|before|previously|from \S+ to|"
+    r"according to|survey|study|report|(?:19|20)\d{2}|within \d+|over \d+ (?:days|weeks|months|years)|"
+    r"per\s+\w+)\b", re.I)
+CURRENCY_CODE = re.compile(
+    r"^(?:USD|EUR|GBP|INR|AUD|CAD|CNY|JPY|CHF|SGD|AED|HKD|NZD|ZAR|BRL|MXN|KRW|RUB|SEK|NOK|DKK)$")
 GENERIC_ANCHOR = re.compile(
     r"^\W*(?:click here|here|read more|learn more|more|this|link|see more|find out more|"
     r"continue|details|go|view)\W*$", re.I)
@@ -60,8 +70,10 @@ FACT_PATTERNS = {
     "pricing": (re.compile(r"[$£€¥₹]\s?\d|(?:\d+\s?(?:USD|EUR|GBP|INR))|"
                            r"\bper (?:month|year|user|seat|licen[cs]e)\b|\bfree (?:tier|plan)\b", re.I),
                 "what it costs"),
+    # A "Contact us" link or form is not an answer: an assistant asked how to reach the
+    # company needs an address it can repeat, so only an email or phone number counts.
     "contact": (re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}|"
-                           r"\+\d[\d\s().\-]{7,}|\bcontact us\b", re.I),
+                           r"\+\d[\d\s().\-]{7,}", re.I),
                 "how to reach the company"),
     "location": (re.compile(r"\b(?:headquarter(?:s|ed)|based in|located in|our office|"
                             r"\d{1,5}\s+[A-Z][a-z]+\s+(?:Street|St|Road|Rd|Avenue|Ave|Lane|"
@@ -74,6 +86,9 @@ FACT_PATTERNS = {
                             r"build|make|sell|design|deliver)\w*\b", re.I),
                  "what it actually sells"),
 }
+# Pricing withheld behind a sales conversation reads to an assistant as "no price".
+GATED_PRICING = re.compile(r"\b(?:contact (?:us|sales)|talk to (?:us|sales)|request a (?:quote|demo)|"
+                           r"get a quote)\b[^.]{0,40}\b(?:pric|quote|cost|plan)", re.I)
 
 
 def sentences(text, limit=400):
@@ -110,7 +125,13 @@ def main():
     site_text_all = " ".join(body_text(best_view(p)[0]) for p in docs)
 
     # -- QUOTE-001: no definitional sentence -----------------------------------
-    identity_pages = [p for p in docs if p.get("page_type") in ("homepage", "about")] or [home]
+    # An About page on another subdomain (a regional branch, a language edition) is not the
+    # brand's own identity page, and its definition is often in another language.
+    def same_host(url):
+        return (parse.urlparse(url).netloc.lower().removeprefix("www.")
+                == parse.urlparse(start_url or "").netloc.lower().removeprefix("www."))
+    identity_pages = [p for p in docs if p.get("page_type") == "homepage"
+                      or (p.get("page_type") == "about" and same_host(p["url"]))] or [home]
     definitional = []
     for page in identity_pages:
         view, _ = best_view(page)
@@ -118,7 +139,9 @@ def main():
         head = " ".join(sentences(text)[:25])
         for sentence in sentences(head):
             lowered = sentence.lower()
-            names_brand = any(tok in lowered for tok in brand) or \
+            # "ICICI Bank is ..." names the brand whose domain token is "icicibank".
+            compact = re.sub(r"[\s\-]", "", lowered)
+            names_brand = any(tok in lowered or tok in compact for tok in brand) or \
                 any(h["text"].strip().lower() in lowered
                     for h in view.get("headings", []) if h["level"] == 1 and h["text"].strip())
             if names_brand and DEFINITION.search(sentence) and len(sentence.split()) >= 6:
@@ -126,14 +149,20 @@ def main():
                 break
     if not definitional:
         first_h1 = next((h["text"] for h in home_view.get("headings", []) if h["level"] == 1), "")
-        find.add("QUOTE-001", "No plain-language sentence states what the brand actually is", "critical",
+        # Without an About page in the sample, only the homepage was read; the definition
+        # may well live on the page that was never fetched.
+        has_about = any(p.get("page_type") == "about" for p in identity_pages)
+        find.add("QUOTE-001", "No plain-language sentence states what the brand actually is",
+                 "critical" if has_about else "high",
                  f"Scanned the opening ~25 sentences of {len(identity_pages)} identity page(s) "
                  f"({', '.join(p['url'] for p in identity_pages[:3])}) for a sentence that both names "
                  f"the brand and defines it ('<Brand> is a ...', '<Brand> provides ...'). None was "
                  f"found. The homepage H1 currently reads: '{(first_h1 or '(no H1)')[:120]}'. When a "
                  "user asks 'what is <brand>?', an assistant needs one liftable sentence to quote; "
                  "with none available it either paraphrases loosely, pulls the description from a "
-                 "third-party directory, or declines to answer.",
+                 "third-party directory, or declines to answer." +
+                 ("" if has_about else " No About page was in the crawled sample, so only the "
+                  "homepage was checked; the definition may exist there."),
                  "Add one explicit definitional sentence near the top of the homepage and About page.",
                  [f"Write it in the form: '{brand_label.capitalize()} is a <category> that "
                   "<does what> for <who>.' -- name the brand, the category and the audience in one "
@@ -145,7 +174,7 @@ def main():
                   "makes a machine confident enough to repeat it.",
                   "Use the same wording on your LinkedIn, Crunchbase and social bios so the claim is "
                   "corroborated off-site as well."],
-                 effort="low", owner="content",
+                 effort="low", owner="content", confidence="high" if has_about else "medium",
                  affected_urls=[p["url"] for p in identity_pages[:5]])
     else:
         find.note(f"Definitional sentence found: \"{definitional[0]['sentence']}\" "
@@ -176,9 +205,12 @@ def main():
     expected_classes = {"offering"}
     if page_types & {"pricing", "product"} or "pricing" in site_text_all.lower():
         expected_classes.add("pricing")
-    if page_types & {"contact", "about", "homepage", "local"}:
+    # Contact details and founding facts live on About and Contact pages. Expecting them
+    # only when such a page was crawled keeps a small sample that never reached /about
+    # from asserting the facts are missing from the site.
+    if page_types & {"contact", "about", "local"}:
         expected_classes |= {"contact"}
-    if page_types & {"about", "homepage"}:
+    if "about" in page_types:
         expected_classes |= {"founding"}
     if page_types & {"contact", "local"}:
         expected_classes.add("location")
@@ -190,13 +222,17 @@ def main():
             missing_facts.append((name, human))
     if missing_facts:
         listed = "; ".join(f"{n} ({h})" for n, h in missing_facts)
-        find.add("QUOTE-003", "Facts assistants are routinely asked for are not stated in text anywhere",
+        missing_names = {n for n, _ in missing_facts}
+        gated = GATED_PRICING.search(site_text_all) if "pricing" in missing_names else None
+        gated_note = (f" Pricing is gated rather than absent: the site says \"{gated.group(0)[:80]}\", "
+                      "which an assistant can only report as 'price not published'." if gated else "")
+        find.add("QUOTE-003", "Facts assistants are routinely asked for are not stated on any crawled page",
                  "high" if len(missing_facts) >= 2 else "medium",
                  f"Across {total} crawled pages ({len(site_text_all.split())} words of body text), no "
-                 f"plain-text statement was found for: {listed}. These are the questions users ask "
-                 "assistants about a brand most often. When the fact is absent from the site, the "
-                 "assistant answers from a third-party directory (often stale or wrong) or says it "
-                 "does not know.",
+                 f"plain-text statement was found for: {listed}.{gated_note} These are the questions "
+                 "users ask assistants about a brand most often. When the fact is absent from the "
+                 "site, the assistant answers from a third-party directory (often stale or wrong) or "
+                 "says it does not know.",
                  "Publish each missing fact as plain text on a page dedicated to it.",
                  ["Create or extend a canonical page per fact class: pricing on /pricing, contact "
                   "details on /contact, company facts on /about.",
@@ -204,7 +240,9 @@ def main():
                   "(\"<Brand> was founded in 2014 in Berlin.\").",
                   "Mirror each fact into structured data (Offer.price, "
                   "Organization.address/foundingDate) so it is machine-readable twice.",
-                  "Avoid putting these facts only in a PDF, an image, a contact form or a chat widget."],
+                  "Avoid putting these facts only in a PDF, an image, a contact form or a chat widget.",
+                  "If pricing is negotiated, publish a starting price or a range with what drives it; "
+                  "'contact sales' alone leaves the answer to third parties."],
                  effort="medium", owner="content",
                  metrics={"missing_fact_classes": [n for n, _ in missing_facts]})
 
@@ -219,11 +257,12 @@ def main():
         heads = [h for h in view.get("headings", []) if h["level"] in (2, 3) and h["text"].strip()]
         if words >= 600 and len(heads) < max(2, words // 500):
             wall_pages.append({"url": page["url"], "words": words, "subheads": len(heads)})
-        blocks = [b for b in re.split(r"\n+", text) if len(b.split()) > 0]
-        overlong = [b for b in blocks if len(b.split()) > 160]
+        paragraphs = view.get("paragraph_word_counts")
+        if paragraphs is None:                    # bundles written before <p> was measured
+            paragraphs = [len(b.split()) for b in re.split(r"\n+", text) if b.split()]
+        overlong = [words for words in paragraphs if words > 160]
         if overlong:
-            long_paras.append({"url": page["url"], "count": len(overlong),
-                               "longest": max(len(b.split()) for b in overlong)})
+            long_paras.append({"url": page["url"], "count": len(overlong), "longest": max(overlong)})
     if wall_pages:
         sample = "; ".join(f"{w['url']} ({w['words']} words, {w['subheads']} subheading(s))"
                            for w in wall_pages[:3])
@@ -262,7 +301,7 @@ def main():
                          if h["text"].strip().endswith("?")]
     has_faq_page = any(p.get("page_type") == "faq" for p in docs)
     if not question_headings and not has_faq_page and total >= 3:
-        find.add("QUOTE-006", "No question-and-answer content anywhere on the site", "medium",
+        find.add("QUOTE-006", "No question-and-answer content on any crawled page", "medium",
                  f"Across {total} crawled pages there are no headings phrased as questions and no page "
                  "classified as an FAQ. Assistants answer questions; content already shaped as "
                  "question-then-direct-answer matches the query closely and can be quoted with no "
@@ -272,7 +311,9 @@ def main():
                   "Make each question an H2 phrased exactly as a user would type it.",
                   "Answer in the first 1-2 sentences under the heading, directly and completely, "
                   "before adding any elaboration.",
-                  "Mark the page up with FAQPage JSON-LD so the pairing is explicit.",
+                  "Optionally add FAQPage JSON-LD to make the pairing explicit to machines. It no "
+                  "longer earns a rich result for most sites; the visible question-and-answer text "
+                  "is what gets quoted.",
                   "Put FAQs on the relevant product/pricing pages too, not only on one central page."],
                  effort="medium", owner="content")
 
@@ -343,28 +384,31 @@ def main():
                  affected_urls=[b["url"] for b in boilerplate[:20]])
 
     # -- QUOTE-009: inconsistent naming of the same thing ----------------------
-    heading_terms = Counter()
+    # Only spellings of one term count: 'e-mail'/'email', 'JavaScript'/'Javascript'. Words
+    # that merely share a prefix ('model'/'models', 'build'/'building') are grammar, and
+    # reporting them told every well-edited site it names things inconsistently.
+    spellings = {}
     for page in docs:
         view, _ = best_view(page)
-        for heading in view.get("headings", []):
-            for word in re.findall(r"[A-Za-z][A-Za-z0-9\-]{3,}", heading["text"]):
-                low = word.lower()
-                if low not in STOPWORDS and low not in brand:
-                    heading_terms[low] += 1
-    near_duplicates = []
-    terms = [t for t, c in heading_terms.items() if c >= 2]
-    for i, first in enumerate(terms):
-        for second in terms[i + 1:]:
-            if first != second and (first.startswith(second) or second.startswith(first)) \
-                    and abs(len(first) - len(second)) <= 3:
-                near_duplicates.append((first, second))
-    if len(near_duplicates) >= 3:
-        sample = ", ".join(f"'{a}'/'{b}'" for a, b in near_duplicates[:4])
+        chunk = " ".join([h["text"] for h in view.get("headings", [])] + [body_text(view)[:20000]])
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+|[A-Za-z][A-Za-z0-9]{3,}",
+                                chunk):
+            if token.isupper() or len(token.replace("-", "")) < 4:
+                continue
+            # Sentence and title case capitalise segment starts; that is not a new spelling.
+            form = "-".join(seg[:1].lower() + seg[1:] for seg in token.split("-"))
+            spellings.setdefault(token.replace("-", "").lower(), Counter())[form] += 1
+    # Each variant must recur, so a single typo or a code identifier is not a pattern.
+    inconsistent = {key: forms for key, forms in spellings.items()
+                    if sum(1 for count in forms.values() if count >= 2) >= 2}
+    if len(inconsistent) >= 2:
+        sample = "; ".join(" / ".join(f"'{form}' ({count})" for form, count in forms.most_common(3))
+                           for forms in list(inconsistent.values())[:4])
         find.add("QUOTE-009", "The same concepts appear under inconsistent names", "low",
-                 f"{len(near_duplicates)} near-duplicate term pair(s) appear across headings: {sample}. "
-                 "Inconsistent naming splits the evidence for a concept across several weak variants "
-                 "instead of concentrating it in one strong one, so no single term is clearly "
-                 "associated with the brand.",
+                 f"{len(inconsistent)} term(s) are spelled more than one way across {total} crawled "
+                 f"pages, each variant used at least twice: {sample}. Inconsistent naming splits the "
+                 "evidence for a concept across variants instead of concentrating it in one, so no "
+                 "single form is clearly associated with the brand.",
                  "Standardise on one name per concept and use it everywhere.",
                  ["Write a short internal terminology list: one canonical name per product and feature.",
                   "Update headings, navigation, structured data and marketing copy to match it.",
@@ -374,6 +418,7 @@ def main():
 
     # -- QUOTE-010: unexpanded acronyms ----------------------------------------
     acronym_counts = Counter()
+    lower_words = set(re.findall(r"\b[a-z]{3,}\b", site_text_all))
     for page in docs:
         view, _ = best_view(page)
         text = body_text(view)
@@ -381,6 +426,12 @@ def main():
             token = match.group(1)
             if token in {"USA", "UK", "EU", "CEO", "CTO", "CFO", "FAQ", "API", "PDF", "URL",
                          "HTML", "CSS", "SEO", "USD", "EUR", "GBP", "AI", "IT", "HR", "OK"}:
+                continue
+            # Not jargon: two letters are too ambiguous to call (AT, BY, GB); a word that also
+            # appears in lower case is uppercase styling (ALL, NEW, LIVE); the brand's own
+            # name is not domain vocabulary; currency codes read as currencies.
+            if len(token) < 3 or token.lower() in lower_words or CURRENCY_CODE.match(token) \
+                    or any(token.lower() in tok for tok in brand):
                 continue
             if not re.search(r"\(\s*" + re.escape(token) + r"\s*\)", text) and \
                     not re.search(re.escape(token) + r"\s*\(", text):
@@ -404,13 +455,15 @@ def main():
     for page in docs:
         view, _ = best_view(page)
         for sentence in sentences(body_text(view), 300):
-            if NUMERIC_CLAIM.search(sentence) and not UNIT_CONTEXT.search(sentence):
+            # Over 40 words is usually navigation run together, not a sentence.
+            if len(sentence.split()) <= 40 and NUMERIC_CLAIM.search(sentence) \
+                    and COMPARATIVE.search(sentence) and not UNIT_CONTEXT.search(sentence):
                 bare_claims.append({"url": page["url"], "sentence": sentence[:160]})
     if len(bare_claims) >= 3:
         sample = "; ".join(f'"{c["sentence"]}" ({c["url"]})' for c in bare_claims[:3])
         find.add("QUOTE-011", "Performance claims lack the baseline that makes them quotable", "low",
-                 f"{len(bare_claims)} numeric claim(s) state a figure with no comparison point, "
-                 f"timeframe or unit of measure. Examples: {sample}. A claim like '50% faster' with no "
+                 f"{len(bare_claims)} comparative claim(s) state a percentage or multiplier with no "
+                 f"baseline, timeframe or source. Examples: {sample}. A claim like '50% faster' with no "
                  "'faster than what' cannot be repeated responsibly, so cautious answer generators "
                  "drop it -- the strongest proof points are the ones being discarded.",
                  "Rewrite each claim to include the baseline, the timeframe and the source.",

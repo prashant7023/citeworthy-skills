@@ -15,6 +15,10 @@ import re
 from datetime import datetime, timezone
 
 SEVERITY_ORDER = ["low", "medium", "high", "critical"]
+# Indexable pages in the loaded bundle, set by load_bundle. "3 of 3 pages" is not
+# site-wide evidence, so prevalence cannot raise severity on a sample this small.
+SAMPLE_SIZE = None
+MIN_PREVALENCE_SAMPLE = 4
 
 
 def load_bundle(workspace):
@@ -28,13 +32,29 @@ def load_bundle(workspace):
         if os.path.exists(path):
             with open(path, encoding="utf-8") as fh:
                 pages.append(json.load(fh))
+    global SAMPLE_SIZE
+    SAMPLE_SIZE = len(html_pages(pages))
     return manifest, pages
 
 
+def is_noindex(page):
+    """The page declares noindex, in its meta robots tag or the X-Robots-Tag header."""
+    meta = ((page.get("raw") or {}).get("robots_meta") or "").lower()
+    header = ((page.get("headers") or {}).get("x-robots-tag") or "").lower()
+    return "noindex" in meta or "noindex" in header
+
+
 def html_pages(pages):
-    """Successfully-fetched HTML pages -- the only sound basis for content checks."""
+    """Successfully-fetched, indexable HTML pages -- the sound basis for content checks.
+
+    A noindexed page has been withdrawn from search by the site itself, so no assistant
+    can cite it and no AI-referred visitor can land on it. Judging its headings, dates or
+    prose reports defects nobody will ever meet (fragment endpoints, widget shells).
+    Noindex itself is reported by crawl-access-audit.
+    """
     return [p for p in pages
-            if p.get("status") == 200 and not p.get("non_html") and p.get("raw")]
+            if p.get("status") == 200 and not p.get("non_html") and p.get("raw")
+            and not is_noindex(p)]
 
 
 def best_view(page):
@@ -71,14 +91,18 @@ def brand_tokens(manifest):
     return {t for t in tokens if len(t) > 2}
 
 
-def escalate(severity, prevalence, homepage_hit=False):
+def escalate(severity, prevalence, homepage_hit=False, sample=None):
     """Deterministic severity adjustment by blast radius.
 
     A defect on one page of forty is not the same problem as the same defect on
     every page, and a defect on the homepage is what an assistant hits first.
+    `sample` is the prevalence denominator when it is not the whole bundle; below
+    MIN_PREVALENCE_SAMPLE pages a high share proves nothing and cannot escalate.
     """
     idx = SEVERITY_ORDER.index(severity)
-    if prevalence >= 0.5 or homepage_hit:
+    size = sample if sample is not None else SAMPLE_SIZE
+    thin = size is not None and size < MIN_PREVALENCE_SAMPLE
+    if homepage_hit or (prevalence >= 0.5 and not thin):
         idx = min(idx + 1, len(SEVERITY_ORDER) - 1)
     elif prevalence <= 0.15:
         idx = max(idx - 1, 0)

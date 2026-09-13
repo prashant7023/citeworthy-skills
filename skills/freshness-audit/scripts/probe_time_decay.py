@@ -32,9 +32,13 @@ LONG = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?
 DMY = re.compile(r"\b([0-3]?\d)\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+((?:19|20)\d{2})\b", re.I)
 
 # Phrases that make a page's currency a load-bearing claim.
+# "Latest", "current" and "today" are marketing vocabulary on nearly every product page;
+# these phrases instead stake a fact on a point in time.
 TIME_SENSITIVE = re.compile(
-    r"\b(latest|newest|current|currently|today|this year|now available|new for|"
-    r"upcoming|recent|as of|up[- ]to[- ]date|202\d roadmap)\b", re.I)
+    r"\b(as of|this year|last updated|up[- ]to[- ]date|"
+    r"currently (?:priced|available|supports?|offers?)|"
+    r"latest (?:version|release|update|figures|data|rates?|prices?)|20\d\d roadmap|"
+    r"(?:rates?|prices?|fees?) (?:effective|valid) (?:from|until))\b", re.I)
 VERSION_CLAIM = re.compile(r"\b(?:v(?:ersion)?\s?\d+(?:\.\d+)*|release \d)", re.I)
 
 
@@ -111,8 +115,13 @@ def main():
     total = len(docs)
 
     # -- TIME-001: time-sensitive pages carry no date -------------------------
-    dateable = [p for p in docs if p.get("page_type") in ("article", "docs", "pricing", "product")
-                or TIME_SENSITIVE.search(body_text(best_view(p)[0])[:6000])]
+    # Product, pricing and landing pages are evergreen by design: "the latest model" is
+    # marketing, not a currency claim a retriever needs dated. Articles and docs are
+    # dated by nature; other pages only when their prose stakes a claim on time.
+    evergreen = ("homepage", "product", "pricing", "listing", "legal", "contact", "careers", "about")
+    dateable = [p for p in docs if p.get("page_type") in ("article", "docs")
+                or (p.get("page_type") not in evergreen
+                    and TIME_SENSITIVE.search(body_text(best_view(p)[0])[:6000]))]
     undated = []
     for page in dateable:
         view, _ = best_view(page)
@@ -125,9 +134,9 @@ def main():
             undated.append(page["url"])
     if undated:
         find.add("TIME-001", "Time-sensitive pages publish no date at all",
-                 escalate("medium", len(undated) / max(1, len(dateable))),
-                 f"{len(undated)}/{len(dateable)} pages that make currency claims (or are articles, "
-                 f"docs, pricing or product pages) expose no date in visible text, meta tags or "
+                 escalate("medium", len(undated) / max(1, len(dateable)), sample=len(dateable)),
+                 f"{len(undated)}/{len(dateable)} pages that make currency claims (or are articles "
+                 f"or docs) expose no date in visible text, meta tags or "
                  f"structured data. Examples: {', '.join(undated[:3])}. A retriever that cannot date a "
                  "page cannot prefer it for a recency-sensitive question, and typically treats "
                  "undated content as older than dated competitors.",

@@ -47,9 +47,10 @@ sends a team to rewrite content that was already correct.
 1. Load the bundle. Extract dates from three independent sources per page: visible prose
    (ISO, "March 4, 2026", "4 March 2026"), structured data
    (`datePublished`/`dateModified`/`uploadDate`/`datePosted`), and meta/OpenGraph tags.
-2. **`TIME-001` undated** — pages that are articles, docs, pricing or product pages, *or*
-   whose text makes an explicit currency claim ("latest", "current", "now"), carrying no
-   date in any of the three sources.
+2. **`TIME-001` undated** — articles and docs, *or* non-evergreen pages whose text stakes
+   a fact on a point in time ("as of", "last updated", "latest version"), carrying no date
+   in any of the three sources. Product, pricing and landing pages are evergreen, and bare
+   marketing words like "latest" do not count.
 3. **`TIME-002` / `TIME-003` stale** — newest date anywhere 12+ months old (24+ is `high`);
    most dated pages 24+ months old.
 4. **`TIME-004` stale copyright** — a footer year more than one year behind. Small, but it

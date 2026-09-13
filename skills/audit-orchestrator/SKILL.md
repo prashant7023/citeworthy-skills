@@ -169,7 +169,10 @@ python skills/audit-orchestrator/scripts/verify_report.py "<ws>/report.json"
 ```
 
 Exit code must be 0. It enforces the schema *and* the evidence bar: every finding must
-cite a measured quantity and a check id. On Path B, apply the same bar by hand.
+cite a measured quantity and a check id. It also rejects any fix that recommends keyword
+stuffing, hidden text, cloaking, instructions aimed at AI models, stripping dates or caveats,
+or invented reviews. Those tactics backfire, and agent-written judgment findings are where
+they creep in. On Path B, apply the same bar by hand.
 
 Lead your answer with the headline, the score (or the reason there is none), and the
 first three fixes. Repeat anything in `limitations` — never let a check that did not run

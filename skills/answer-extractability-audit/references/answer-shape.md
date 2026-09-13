@@ -84,9 +84,13 @@ Every check here is gated, because the most valuable property of a content check
 knowing when *not* to fire:
 
 - **`QUOTE-003` fact coverage is gated by site type.** Pricing is only expected when the site
-  has pricing or product pages, or mentions pricing at all; location and hours only when
-  contact or local pages exist; founding only when there is an About or homepage. A charity
-  is never asked for a price list.
+  has pricing or product pages, or mentions pricing at all; location only when contact or
+  local pages exist; contact details only when a Contact, About or local page was crawled;
+  founding only when an About page was crawled. A charity is never asked for a price list,
+  and a 14-page sample that never reached /about is never told the site lacks About facts.
+- **`QUOTE-001` reads only same-host identity pages.** An About page on another subdomain (a
+  regional branch, a language edition) is not the brand's own. Without an About page in
+  the sample the finding is `high` at medium confidence, never `critical`.
 - **`QUOTE-007` needs at least 6 sections sampled** and fires only above 70%, so a short site
   with two unattributed sections is not accused of a systemic problem.
 - **`QUOTE-004` scales with length** (one subheading per ~500 words) rather than using a
@@ -94,7 +98,17 @@ knowing when *not* to fire:
 - **`QUOTE-008` requires the page to actually use `<main>`.** Without a landmark there is no
   reliable boilerplate boundary, so the check abstains rather than guessing.
 - **`QUOTE-010` excludes universally-understood acronyms** (API, FAQ, CEO, PDF, URL, AI, …)
-  and requires 4+ uses before flagging.
+  and requires 4+ uses before flagging. It also skips two-letter tokens, words that appear
+  elsewhere in lower case (uppercase styling such as ALL or NEW), the brand's own name, and
+  ISO currency codes.
+- **`QUOTE-009` counts only spelling variants of one term** (`e-mail`/`email`,
+  `JavaScript`/`Javascript`), each variant used at least twice. Plurals and inflections
+  (`model`/`models`, `build`/`building`) are grammar, not inconsistency.
+- **`QUOTE-011` counts only comparative relative claims:** a percentage or multiplier plus
+  a comparison word, with no baseline, year or source. "Trusted by 98% of the Fortune 500"
+  and "over 11 days" are not claims needing a baseline.
+- **`QUOTE-005` measures real `<p>` elements.** Splitting page text on line breaks turned
+  layouts built from inline elements into multi-thousand-word "paragraphs".
 - **`QUOTE-005` and `QUOTE-012` require a minimum corpus** (multiple pages, 40+ links) so small
   sites do not trip thresholds designed for large ones.
 

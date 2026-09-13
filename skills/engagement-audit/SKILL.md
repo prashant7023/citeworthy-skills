@@ -49,13 +49,16 @@ unlabelled inputs) — those appear here because they cost engagement *and* disc
 
 1. Load the bundle; prefer the rendered view where one exists.
 2. **`STAY-001` deep-link orientation** — for each inner page, check three signals: an H1
-   naming the subject, the brand named in the first screen, a breadcrumb trail. Failing
+   naming the subject, the brand named in the title, `og:site_name` or first screen
+   (accent- and spacing-insensitive), a breadcrumb trail. Failing
    two or more counts as disoriented; fires when half or more of inner pages fail. This
    is the check that most distinguishes AI-referral readiness from ordinary UX.
 3. **`STAY-002` entry-screen clarity** — the first screen (with navigation and header
    chrome excluded, so menu labels never count as content) carrying under 20 words, or
    no action-verb CTA among any of the page's links.
-4. **`STAY-003` weight** — over 500 KB of HTML or more than 8 render-blocking scripts.
+4. **`STAY-003` weight** — over 1 MB of HTML or more than 8 render-blocking scripts in
+   `<head>`. Only classic scripts there block first paint; `async`, `defer`, `module` and
+   end-of-body scripts do not.
 5. **`STAY-004` mobile viewport** — missing `width=device-width`, or `user-scalable=no` /
    `maximum-scale=1`, which block pinch-zoom. Most assistant referrals arrive on mobile.
 6. **`STAY-005` stacked interruptions** — two or more of: consent platform, chat widget,
@@ -90,7 +93,8 @@ rather than implying this skill measured Core Web Vitals.
 
 ## Severity
 
-`critical` — arrivals cannot orient themselves at all (escalated `STAY-001`).
+Never `critical`: an engagement defect degrades a visit but cannot make a brand
+unfindable, so the entrypoint caps this pillar at `high`.
 `high` — no orientation on most inner pages, no entry-screen CTA, broken mobile viewport,
 three or more verification surfaces missing. `medium` — weight, interruptions, dead ends,
 form friction, gated pricing, missing alt text. `low` — generic CTAs, no site search,

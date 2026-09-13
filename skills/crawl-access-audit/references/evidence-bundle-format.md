@@ -51,7 +51,9 @@ same page maps to the same file every time.
 | `page_count`, `ok_page_count`, `page_types` | Sample shape — how analyzers judge prevalence. |
 | `robots` | `status`, `present`, `sitemaps_declared`, `parse_errors[]`, `raw_excerpt`, and `agent_verdicts` — a per-agent `{allowed_root, matched_group, rule, class}` map. |
 | `sitemaps[]`, `sitemap_url_count`, `sitemap_lastmods[]`, `sitemap_urls_sample[]` | Sitemap analysis; `lastmods` feeds the fake-freshness check. |
-| `llms_txt` | `{present, status}`. |
+| `llms_txt` | `{present, status}`. Recorded only; never scored. |
+| `edge_access_probe` | `{url, control: {status, words, challenge}, agents: [{agent, status, words, refused}], refused: [{agent, outcome}]}`. Shows the browser-UA control next to each robots-allowed AI search agent. `control` is null when robots.txt blocks every probed agent. |
+| `crawl_frontier` | `{link_frontier_exhausted, frontier_capped}`. Records whether link-following finished before the page budget ran out. The orphan-URL check requires it to have finished. |
 | `document_links[]` | Links to PDF/Office files, with source page and anchor text. |
 | `render` | `{available, reason, engine, attempted_urls}` — **the honesty record.** Analyzers read this to decide measured vs. heuristic mode. |
 | `blocked_by_robots[]` | URLs skipped, with the matching rule. |
@@ -84,9 +86,10 @@ same page maps to the same file every time.
 | `main_text`, `main_word_count`, `main_text_ratio` | Text inside `<main>`/`<article>`. Used for the boilerplate ratio; analyzers fall back to `text` when a page has no landmark, since many real sites do not use them. |
 | `first_screen_text` | First ~60 text nodes **excluding `<nav>`, `<header>` and `<footer>`**, and excluding `aria-hidden`/`hidden` subtrees. Approximates above-the-fold content. The chrome exclusion matters: menu labels are identical on every page, so counting them makes a blank hero look informative. |
 | `noscript_text` | `<noscript>` content, captured separately. |
+| `visible_text_chars`, `data_nosnippet_chars` | Characters of visible text, and how many of them sit inside `data-nosnippet` elements. The ratio feeds the snippet-masking check. |
 | `links[]` | `{href, abs, text, rel, aria_label, target}`. `abs` is resolved and defragmented; empty for `javascript:`/`mailto:`/`tel:`/fragment links. `text` is entity-decoded and whitespace-collapsed. |
 | `images[]` | `{src, alt, width, height, loading, in_first_screen}`. `alt` is `null` when the attribute is absent and `""` when present-but-empty — a distinction the accessibility check depends on. |
-| `iframes[]`, `scripts[]`, `stylesheets[]`, `forms[]` | `scripts` records `async`/`defer`/`module`, which drives the render-blocking count. `forms` records field types, `required` and whether each field is labelled. |
+| `iframes[]`, `scripts[]`, `stylesheets[]`, `forms[]` | `scripts` records `async`/`defer`/`module` and `in_head`, which drive the render-blocking count (only classic scripts in `<head>` block first paint). `forms` records field types, `required` and whether each field is labelled. |
 | `jsonld[]`, `jsonld_raw_count`, `jsonld_errors[]` | Parsed JSON-LD, plus per-block parse errors with message, line, column and surrounding snippet. `raw_count` vs `len(jsonld)` reveals how many blocks were lost to syntax errors. |
 | `microdata_types[]`, `rdfa_types[]` | So a site using microdata is not falsely reported as having no structured data. |
 | `counts{}` | Tag counts (`table`, `li`, `p`, `video`, `input`, `dialog`, `script`, `img`, `a`, …). |

@@ -8,7 +8,7 @@ Check-id prefixes name the pipeline stage they guard: **REACH** (can a bot get i
 **READ** (can it parse), **MARK** (machine-readable facts), **QUOTE** (quotable prose),
 **ENTITY** (does the web agree), **TIME** (is it still true), **STAY** (does the visitor remain).
 
-**93 checks across 7 skills.** All are proven able to fire — see `tests/`.
+**94 checks across 7 skills.** All are proven able to fire — see `tests/`.
 
 ## REACH-* — Access — can a crawler reach the page?
 
@@ -34,10 +34,11 @@ Pillar: `access` · Skill: `crawl-access-audit`
 | `REACH-016` | low | Long redirect chains on internal URLs |
 | `REACH-017` | medium | Sitemap URLs are not reachable through internal links |
 | `REACH-018` | high | Content paths are disallowed for all crawlers |
-| `REACH-019` | low | No /llms.txt curated entry point for AI agents |
 | `REACH-020` | medium | robots.txt declares the same user-agent in more than one group |
 | `REACH-021` | critical | Different URLs return byte-identical page content |
 | `REACH-022` | critical | A bot-protection service is serving challenge pages instead of content |
+| `REACH-023` | high | The server refuses AI search agents that robots.txt allows |
+| `REACH-024` | derived | Snippet controls leave too little of the page quotable |
 
 ## READ-* — Parse — can a machine read what a human sees?
 
@@ -64,7 +65,7 @@ Pillar: `extract` · Skill: `structured-data-audit`
 
 | Check | Base severity | Detects |
 |---|---|---|
-| `MARK-001` | high | No structured data anywhere on the site |
+| `MARK-001` | high | No structured data on any crawled page |
 | `MARK-002` | medium | Structured data covers only a minority of pages |
 | `MARK-003` | high | JSON-LD blocks fail to parse |
 | `MARK-004` | high | No Organization entity defines who the brand is |
@@ -85,10 +86,10 @@ Pillar: `extract` · Skill: `answer-extractability-audit`
 |---|---|---|
 | `QUOTE-001` | critical | No plain-language sentence states what the brand actually is |
 | `QUOTE-002` | high | The homepage opens with a slogan instead of a statement of what this is |
-| `QUOTE-003` | high | Facts assistants are routinely asked for are not stated in text anywhere |
+| `QUOTE-003` | high | Facts assistants are routinely asked for are not stated on any crawled page |
 | `QUOTE-004` | medium | Long pages have too few subheadings to chunk cleanly |
 | `QUOTE-005` | low | Paragraphs are too long to survive as retrieved passages |
-| `QUOTE-006` | medium | No question-and-answer content anywhere on the site |
+| `QUOTE-006` | medium | No question-and-answer content on any crawled page |
 | `QUOTE-007` | high | Content sections never name the brand, so quoted passages lose attribution |
 | `QUOTE-008` | medium | Navigation and footer text outweighs the unique content |
 | `QUOTE-009` | low | The same concepts appear under inconsistent names |
@@ -103,7 +104,7 @@ Pillar: `trust` · Skill: `entity-corroboration-audit`
 
 | Check | Base severity | Detects |
 |---|---|---|
-| `ENTITY-001` | high | The site links to almost no authoritative profiles of itself |
+| `ENTITY-001` | derived | The site links to few authoritative profiles of itself |
 | `ENTITY-002` | medium | The brand describes itself differently on each surface |
 | `ENTITY-003` | low | Multiple inconsistent phone numbers appear across the site |
 | `ENTITY-004` | medium | Published content is anonymous |
@@ -111,7 +112,7 @@ Pillar: `trust` · Skill: `entity-corroboration-audit`
 | `ENTITY-006` | critical | The brand's own site does not surface for its own defining question |
 | `ENTITY-007` | high | The web describes the brand differently than the brand describes itself |
 | `ENTITY-008` | high | The brand name collides with other entities in search results |
-| `ENTITY-009` | high | No independent sources discuss the brand |
+| `ENTITY-009` | high | No independent sources about the brand surfaced in search |
 | `ENTITY-010` | low | The brand has no entry in the public knowledge graphs |
 | `ENTITY-011-{label}` | high | Third parties, not the brand, answer '{label}' questions about it |
 
@@ -161,6 +162,10 @@ Pillar: `engage` · Skill: `engagement-audit`
   defect. Only blocking answer-time retrieval agents (`REACH-001`) is critical.
 - `REACH-008`, `REACH-021` and `REACH-022` each mark the whole audit inconclusive and suppress
   the score — a crawl that read nothing is never reported as a pass.
+- `REACH-019` (no `/llms.txt`) is retired. No major AI search crawler documents reading the
+  file, so its absence is recorded in the manifest and notes but never scored.
+- `REACH-023` is always `medium` confidence: a CDN that admits genuine crawlers by verified
+  IP also refuses this probe, which cannot originate from those ranges.
 - `QUOTE-001-J` is the marketplace's only agent-judgment finding. It is quote-backed, always
   `medium` confidence, and never overwrites the script's `QUOTE-001`. See
   `answer-extractability-audit/references/judgment-rubric.md`.

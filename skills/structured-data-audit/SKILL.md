@@ -15,8 +15,11 @@ allowed-tools: Bash, Read
 
 # Structured Data Audit (pillar 3a: machine-readable facts)
 
-Stage 3a. Structured data is the only channel where a page states a fact in a form a
-machine cannot misread.
+Stage 3a. Structured data states facts in a form a machine does not have to interpret.
+Its demonstrated value is entity disambiguation (this brand, not a namesake) and search
+features (prices, ratings, breadcrumbs). No AI provider has shown that markup alone gets
+a page cited, so this skill never promises that. It checks that the markup is present,
+valid, and truthful. Markup that contradicts the visible page is worse than no markup.
 
 ## When to use
 

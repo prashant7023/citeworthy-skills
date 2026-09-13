@@ -13,9 +13,9 @@ two can be traded off by the reader.
 | Severity | Definition | Examples |
 |---|---|---|
 | `critical` | The brand cannot be found, read, quoted or identified **at all**, site-wide. | Retrieval agents disallowed in robots.txt; homepage fails for a bot UA; under 25% of content server-rendered; no sentence anywhere says what the brand is; the brand's own domain does not surface for its own defining question. |
-| `high` | A whole class of facts, or a major section, is unavailable or wrong. | No structured data anywhere; markup contradicting the visible page; nosnippet on content pages; the web describes the brand differently than it describes itself; inner pages do not orient a cold arrival. |
+| `high` | A whole class of facts, or a major section, is unavailable or wrong. | No structured data on any crawled page; markup contradicting the visible page; nosnippet on content pages; the CDN refusing AI search agents that robots.txt allows; the web describes the brand differently than it describes itself; inner pages do not orient a cold arrival. |
 | `medium` | Discoverability or engagement is measurably degraded, but the fact is still obtainable. | No sitemap; missing canonicals; thin subheading structure; stacked interruptions; undated time-sensitive pages. |
-| `low` | Hygiene, polish, or a proactive opportunity with no current defect. | Stale copyright year; missing `lang`; no `/llms.txt`; generic anchor text. |
+| `low` | Hygiene, polish, or a proactive opportunity with no current defect. | Stale copyright year; missing `lang`; sitemap not advertised in robots.txt; generic anchor text. |
 
 ## Prevalence adjustment
 
@@ -24,10 +24,19 @@ Applied inside each skill via `bundle.escalate()`, where the page-level evidence
 ```
 prevalence = affected_pages / crawled_pages
 
-prevalence >= 0.50  OR homepage affected  ->  escalate one step
-prevalence <= 0.15                        ->  demote one step
-otherwise                                 ->  unchanged
+prevalence >= 0.50 (on 4+ pages)  OR homepage affected  ->  escalate one step
+prevalence <= 0.15                                     ->  demote one step
+otherwise                                              ->  unchanged
 ```
+
+Below four pages, a high share proves nothing: "1 of 1 pages" is a sample, not a site. The
+denominator is the check's own (`sample=`) where that differs from the bundle, so an
+undated-page check over 1 qualifying page cannot reach `high`.
+
+Two caps sit above prevalence. Engagement findings are never `critical`, because a defect
+that degrades a visit cannot make a brand unfindable. And when the crawler was served
+challenge or duplicate pages (`REACH-021`, `REACH-022`), content findings are withheld
+entirely, since they describe the interstitial rather than the site.
 
 The homepage clause exists because it is the page an assistant and a human are most
 likely to hit first, so a defect there has outsized reach regardless of page count.
